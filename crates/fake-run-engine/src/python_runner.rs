@@ -11,7 +11,7 @@ use std::process::Stdio;
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::broadcast::Sender;
 use tracing::warn;
 
 use crate::engine::{EngineError, Event};
@@ -33,7 +33,7 @@ pub async fn spawn_python(
     script: &str,
     runtime_dir: &Path,
     env: HashMap<String, String>,
-    events: UnboundedSender<Event>,
+    events: Sender<Event>,
 ) -> Result<Child, EngineError> {
     if !python_path.exists() {
         return Err(EngineError::PythonNotFound(
@@ -61,9 +61,7 @@ pub async fn spawn_python(
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                if tx.send(Event::Log(line)).is_err() {
-                    break;
-                }
+                let _ = tx.send(Event::Log(line));
             }
         });
     }
@@ -74,9 +72,7 @@ pub async fn spawn_python(
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
-                if tx.send(Event::Log(line)).is_err() {
-                    break;
-                }
+                let _ = tx.send(Event::Log(line));
             }
         });
     }
@@ -140,7 +136,7 @@ pub fn process_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::mpsc;
+    use tokio::sync::broadcast;
 
     #[test]
     fn venv_python_path_mac() {
@@ -153,7 +149,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_missing_python_returns_not_found() {
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = broadcast::channel(16);
         let err = spawn_python(
             Path::new("/does/not/exist/python"),
             "x.py",
@@ -187,7 +183,7 @@ mod tests {
         )
         .unwrap();
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = broadcast::channel(64);
         let mut child = spawn_python(
             Path::new(&python_path),
             script.to_str().unwrap(),
@@ -202,6 +198,7 @@ mod tests {
         assert!(status.success(), "python exited with {:?}", status);
 
         let mut lines = Vec::new();
+        // Drain immediately available
         while let Ok(evt) = rx.try_recv() {
             if let Event::Log(s) = evt {
                 lines.push(s);

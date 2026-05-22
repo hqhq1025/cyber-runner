@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use fake_run_core::{Request, Response};
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 
 /// Events streamed from the engine to subscribers (Tauri host → frontend).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,8 +45,9 @@ pub trait Engine: Send + Sync {
     async fn cleanup(&self, req: &Request) -> Result<Response, EngineError>;
 
     /// Subscribe to engine events. Each call returns a fresh receiver;
-    /// implementations may multiplex internally.
-    fn subscribe(&self) -> mpsc::UnboundedReceiver<Event>;
+    /// implementations multiplex via `tokio::sync::broadcast` so multiple
+    /// subscribers see the same stream.
+    fn subscribe(&self) -> broadcast::Receiver<Event>;
 }
 
 #[cfg(test)]
