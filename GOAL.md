@@ -42,13 +42,30 @@
 - `69c4dc4` Phase 2 · env_setup + cleanup + RealEngine，14 tests
 - `5008315` Phase 3 · macOS osascript + Windows UAC manifest + embed-manifest，15 tests（subagent）
 - `3195af7` Phase 4 · Svelte 5 UI 1:1 移植 + 4 个 mock Tauri commands，8 tests + 190 files type-check 0 errors（subagent）
-- research subagent · `docs/research/android-fake-run-2026-05-22.md`，推荐架构 B
-- Android arch-B 实测 · `docs/research/android-arch-b-smoke-test-2026-05-22.md`：emulator 上 `cmd location providers set-test-provider-location` 注入轨迹 5 点全部到位，dlut-FakeRun APK 也成功 build (~3MB) —— **架构 B 通过验证**，后续 Rust 端只需封装 4 条 adb 命令
+- `935be03` Android 调研 + emulator 架构 B 实测通过
 
-### 后续要看的
+### Android 线收尾（2026-05-22）—— **CLOSED**
 
-- 集成验证：`cargo test --workspace` + `cargo tauri dev` 弹出窗口
-- 把 mock 后端换成真 `RealEngine`，端到端串通"点'开始' → spawn Python → 日志流到 UI"
-- 实装 `crates/fake-run-engine/src/android.rs`（约 100 行 Rust 封装 4 条 adb 命令）
-- 真机实测：在 root 的 Android 手机上跑步道乐跑/乐动力，看 mock 标志是否被检测
+**结论**：对**用户具体场景（北邮校园跑微信小程序）无可行的非 root 方案**。
+
+**实测过程**：
+1. ✅ emulator 上 adb 注入 GPS 完美工作（架构 B 验证）
+2. ✅ 真机 OPPO PJW110 Android 16 ColorOS 16，自加 manifest receiver 重 build 后 shell broadcast 也工作
+3. ✅ 系统 GPS provider 被改后**百度地图正确显示假位置**
+4. ❌ **微信小程序仍显示真实位置**——根因：`wx.getLocation()` → `TencentLocationManager`，腾讯 SDK 优先用 WiFi MAC + 基站 ID 联网反查（`apis.map.qq.com`），不读 Android 系统 GPS provider
+5. 研究 `docs/research/wechat-location-bypass-2026-05-22.md` 确认：绕开腾讯 SDK 唯一可行路径是 **root + Magisk + LSPosed + Shadow 模块**
+6. OPPO PJW110 是 Find X8 系列，2023+ 机型 OPPO 已停发解锁码，社区方案门槛极高；且 root 后银行/支付宝/微信支付会拒登；user 日用主力机，**性价比不值得**
+
+**保留的产物**（不删，有价值）：
+- `scripts/drive_android.py`：北邮西土城路线 BD-09→WGS-84 + adb broadcast，对**非微信定位 APP** 仍直接可用
+- `docs/research/android-fake-run-2026-05-22.md`：整体调研
+- `docs/research/android-arch-b-smoke-test-2026-05-22.md`：emulator 复现脚本
+- `docs/research/wechat-location-bypass-2026-05-22.md`：dead-end 分析 + 5 方案对比
+
+**删的**：`external/dlut-FakeRun/` 整目录（已 gitignored，本地删除省盘）
+
+### 当前重新聚焦：iOS 主线 Phase 5
+
+集成真 RealEngine 到 Tauri commands，替换 Phase 4 留下的 mock，端到端串通"GUI 点开始 → spawn python main.py → 日志流到 UI"。
+
 
