@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "fake run",
-        "width": 880,
-        "height": 600,
-        "minWidth": 820,
-        "minHeight": 560,
+        "width": 720,
+        "height": 540,
+        "minWidth": 620,
+        "minHeight": 460,
         "resizable": true,
         "fullscreen": false
       }

@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- ============================================================
+       fake run · app icon
+       Concept: rounded-square base (Apple icon proportions) +
+       check-stride hybrid mark + GPS lock ring at apex.
+       Reads as: confirmation / forward motion / location.
+       ============================================================ -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#34c75e" />
+      <stop offset="100%" stop-color="#0a6e4c" />
+    </linearGradient>
+    <radialGradient id="sheen" cx="0.35" cy="0.2" r="0.9">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.18" />
+      <stop offset="60%" stop-color="#ffffff" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+
+  <!-- Rounded square base (radius = 22.37%, matches macOS 11+ app icon) -->
+  <rect x="0" y="0" width="1024" height="1024" rx="229" ry="229" fill="url(#bg)" />
+  <rect x="0" y="0" width="1024" height="1024" rx="229" ry="229" fill="url(#sheen)" />
+
+  <!-- Subtle inner highlight bevel (top edge) -->
+  <rect x="6" y="6" width="1012" height="1012" rx="225" ry="225"
+        fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="2" />
+
+  <!-- GPS lock ring (lighter, behind the dot) -->
+  <circle cx="756" cy="282" r="92" fill="none"
+          stroke="#fffceb" stroke-opacity="0.45" stroke-width="22" />
+
+  <!-- Check / stride hybrid: low-left dip then long forward-up extension -->
+  <path
+    d="M 230 640 L 384 794 L 756 282"
+    fill="none"
+    stroke="#ffffff"
+    stroke-width="84"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- GPS lock dot at the apex -->
+  <circle cx="756" cy="282" r="50" fill="#fffceb" />
+
+  <!-- Soft bottom shadow inside the icon (drift of motion) -->
+  <ellipse cx="512" cy="940" rx="280" ry="14"
+           fill="#000000" fill-opacity="0.08" />
+</svg>

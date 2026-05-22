@@ -7,7 +7,7 @@
 
   import { onMount } from "svelte";
   import { runStore } from "./lib/stores.svelte";
-  import { SPEED_MAX, SPEED_MIN, SPEED_STEP } from "./lib/api";
+  import { SPEED_MAX, SPEED_MIN, SPEED_STEP, isTauri } from "./lib/api";
 
   // 启动时挂上 1s 轮询；组件销毁时清掉。
   onMount(() => runStore.startPolling(1000));
@@ -81,22 +81,29 @@
   <header class="header">
     <div class="brand">
       <span class="logo" aria-hidden="true">
-        <svg viewBox="0 0 46 46" width="46" height="46">
+        <svg viewBox="0 0 40 40" width="36" height="36">
           <defs>
             <linearGradient id="logo-grad" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stop-color="#0a573f" />
-              <stop offset="100%" stop-color="#15936a" />
+              <stop offset="0%" stop-color="#34c75e" />
+              <stop offset="100%" stop-color="#0a6e4c" />
             </linearGradient>
           </defs>
-          <rect x="0" y="0" width="46" height="46" rx="10" ry="10" fill="url(#logo-grad)" />
+          <!-- rounded square base —— Apple app icon proportions (radius ~22% of side) -->
+          <rect x="0" y="0" width="40" height="40" rx="9" ry="9" fill="url(#logo-grad)" />
+          <!-- GPS lock ring (top right) -->
+          <circle cx="29.5" cy="11" r="3.6" fill="none"
+                  stroke="#fffceb" stroke-opacity="0.55" stroke-width="1" />
+          <!-- check / forward-stride hybrid —— low-left dip then long up-right extension -->
           <path
-            d="M 9.2 30.4 C 16.6 12.9 26.7 38.6 36.8 16.6"
+            d="M 9 25 L 15 31 L 29.5 11"
             fill="none"
-            stroke="rgba(255,255,255,0.92)"
-            stroke-width="4"
+            stroke="#ffffff"
+            stroke-width="3.2"
             stroke-linecap="round"
+            stroke-linejoin="round"
           />
-          <circle cx="34.0" cy="8.6" r="3.7" fill="#deff9e" />
+          <!-- GPS lock dot at apex -->
+          <circle cx="29.5" cy="11" r="2" fill="#fffceb" />
         </svg>
       </span>
       <div class="brand-text">
@@ -223,7 +230,7 @@
     {#if status.lastError}
       <div class="error-line">{status.lastError}</div>
     {/if}
-    {#if runStore.frontendError}
+    {#if runStore.frontendError && isTauri()}
       <div class="error-line">前端: {runStore.frontendError}</div>
     {/if}
     <div class="log-body">
