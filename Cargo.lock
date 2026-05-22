@@ -799,6 +799,7 @@ name = "fake-run-app"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "dirs 5.0.1",
  "embed-manifest",
  "fake-run-core",
  "fake-run-engine",
@@ -809,6 +810,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

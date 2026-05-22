@@ -1,22 +1,30 @@
-//! Mock 后端状态 —— Phase 4 用，等 RealEngine 接通后会被替换。
+//! 真后端：包一层 `AppState` 把 [`fake_run_engine::RealEngine`] 暴露给 Tauri commands。
 //!
-//! 设计原则：所有真正的业务逻辑都放在 `MockState` / `AppState` 的普通方法里，
-//! `#[tauri::command]` 包装层（`commands.rs`）只做 `Result` 映射。
-//! 这样核心逻辑可以脱离 Tauri 直接单测，到时候接真引擎时也只换 body。
+//! 关键约束：commands 层签名（`start(speed) -> Result<String,String>` 等）不变，
+//! 仅替换 `AppState` 内部 —— Phase 4 留下的 `MockState` 退役。
+//!
+//! 状态来源：
+//! - `is_running` / `recent_log` / `last_error` 由后台 event pump 从
+//!   `RealEngine::subscribe()` 拉到的 `Event` 流驱动
+//! - `speed_mps` / `started_at` 由 `start()` 直接写入
+//! - `Status::server_now_rfc3339` 用 `Utc::now()` 当场算
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::{DateTime, Utc};
-use fake_run_core::{clamp_speed, pace_text};
+use fake_run_core::{clamp_speed, pace_text, Request};
+use fake_run_engine::{Engine, Event, RealEngine};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
-/// 最多保留的日志行数，避免无限增长撑爆 UI。
+/// 保留的日志行上限，避免 UI 撑爆。
 const RECENT_LOG_CAPACITY: usize = 200;
-/// Mock 倒计时默认值（30 分钟），对齐 Swift `RunControlModel.countdownMinutes`。
+/// 默认倒计时（分钟），对齐 Swift `RunControlModel.countdownMinutes`。
 const DEFAULT_COUNTDOWN_MINUTES: i64 = 30;
 
-/// 暴露给前端的状态快照。字段命名走 `camelCase` 以匹配 JS/TS 惯例。
+/// 前端拉的状态快照（`camelCase` 配合 TypeScript 习惯）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
@@ -27,22 +35,21 @@ pub struct Status {
     pub pace_text: String,
     pub recent_log: Vec<String>,
     pub last_error: Option<String>,
-    /// 服务端"现在"，方便前端展示同步时钟（不依赖客户端时间）。
     pub server_now_rfc3339: String,
 }
 
-/// 内部 mock 状态，被 `AppState` 用 `Mutex` 包起来。
+/// 内部状态 —— 受 `Mutex` 保护，被 event pump 和 commands 同时写。
 #[derive(Debug, Clone)]
-pub struct MockState {
-    pub is_running: bool,
-    pub speed_mps: f64,
-    pub started_at: Option<DateTime<Utc>>,
-    pub countdown_total_seconds: i64,
-    pub recent_log: VecDeque<String>,
-    pub last_error: Option<String>,
+struct InnerState {
+    is_running: bool,
+    speed_mps: f64,
+    started_at: Option<DateTime<Utc>>,
+    countdown_total_seconds: i64,
+    recent_log: VecDeque<String>,
+    last_error: Option<String>,
 }
 
-impl Default for MockState {
+impl Default for InnerState {
     fn default() -> Self {
         Self {
             is_running: false,
@@ -55,7 +62,7 @@ impl Default for MockState {
     }
 }
 
-impl MockState {
+impl InnerState {
     fn push_log(&mut self, line: impl Into<String>) {
         if self.recent_log.len() == RECENT_LOG_CAPACITY {
             self.recent_log.pop_front();
@@ -88,140 +95,228 @@ impl MockState {
     }
 }
 
-/// 与 Tauri 集成的容器。前端通过 `tauri::State<'_, AppState>` 访问。
+/// AppState 对外接口。生产 (`new_real`) 持 `RealEngine`；测试 (`new_dummy`)
+/// 不绑引擎，便于单测事件 → InnerState 的状态机。
 pub struct AppState {
-    inner: Mutex<MockState>,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            inner: Mutex::new(MockState::default()),
-        }
-    }
+    inner: Mutex<InnerState>,
+    engine: Option<Arc<RealEngine>>,
+    log_path: String,
+    pid_path: String,
 }
 
 impl AppState {
-    /// 启动 mock 引擎。speed 会被钳制到 `[MIN_SPEED_MPS, MAX_SPEED_MPS]`。
-    /// 已经运行中再次调用返回 `Err`，避免静默吃掉操作。
-    pub fn start(&self, speed: f64) -> Result<String, String> {
-        let mut s = self.lock()?;
-        if s.is_running {
-            return Err("already running".into());
+    /// 生产构造：绑一个共享的 `RealEngine`。`runtime_dir` 通常是
+    /// `~/Library/Application Support/RunControl/runtime`（沿用 legacy Run Control 的 venv 和 main.py）。
+    pub fn new_real(engine: Arc<RealEngine>, base_dir: PathBuf) -> Self {
+        let log_path = base_dir.join("run.log").to_string_lossy().into_owned();
+        let pid_path = base_dir.join("run.pid").to_string_lossy().into_owned();
+        Self {
+            inner: Mutex::new(InnerState::default()),
+            engine: Some(engine),
+            log_path,
+            pid_path,
         }
-        let clamped = clamp_speed(speed);
-        s.speed_mps = clamped;
-        s.started_at = Some(Utc::now());
-        s.is_running = true;
-        s.last_error = None;
-        s.push_log(format!("[mock] start speed={clamped:.1} m/s"));
-        Ok("started".into())
     }
 
-    /// 停止。未运行也允许调用（幂等），方便 UI 重置。
-    pub fn stop(&self) -> Result<String, String> {
-        let mut s = self.lock()?;
-        if s.is_running {
-            s.push_log("[mock] stop");
+    /// 测试构造：不接引擎，commands 路径不可用，只能驱动事件状态机。
+    #[cfg(test)]
+    pub fn new_dummy() -> Self {
+        Self {
+            inner: Mutex::new(InnerState::default()),
+            engine: None,
+            log_path: "/tmp/fake-run-test.log".into(),
+            pid_path: "/tmp/fake-run-test.pid".into(),
         }
-        s.is_running = false;
-        s.started_at = None;
-        Ok("stopped".into())
     }
 
-    /// 清理：重置状态 + 清空日志/错误。等价于 Swift 里的 cleanup helper。
-    pub fn cleanup(&self) -> Result<String, String> {
-        let mut s = self.lock()?;
-        s.is_running = false;
-        s.started_at = None;
-        s.last_error = None;
-        s.recent_log.clear();
-        s.push_log("[mock] cleanup ok");
-        Ok("cleaned".into())
+    /// 让 `RealEngine` 跑 start。引擎事件后续由 pump 写回 InnerState。
+    pub async fn start(&self, speed: f64) -> Result<String, String> {
+        let engine = self
+            .engine
+            .as_ref()
+            .ok_or_else(|| "engine not bound (test build)".to_string())?;
+        {
+            let mut s = self.lock()?;
+            if s.is_running {
+                return Err("already running".into());
+            }
+            let clamped = clamp_speed(speed);
+            s.speed_mps = clamped;
+            s.last_error = None;
+            // 乐观先记一条 UI 反馈；真正的 Started 由 event pump 翻成 is_running=true
+            s.push_log(format!("requesting start at {clamped:.1} m/s"));
+        }
+        let req = Request::new_start(
+            Uuid::new_v4().to_string(),
+            &self.log_path,
+            &self.pid_path,
+            fake_run_core::DEFAULT_ROUTE,
+            speed,
+        );
+        match engine.start(&req).await {
+            Ok(resp) => Ok(resp.output),
+            Err(e) => {
+                let msg = e.to_string();
+                if let Ok(mut s) = self.inner.lock() {
+                    s.last_error = Some(msg.clone());
+                    s.push_log(format!("error: {msg}"));
+                }
+                Err(msg)
+            }
+        }
     }
 
-    /// 读取最新快照，前端轮询。
+    pub async fn stop(&self) -> Result<String, String> {
+        let engine = self
+            .engine
+            .as_ref()
+            .ok_or_else(|| "engine not bound (test build)".to_string())?;
+        let req = Request::new_stop(Uuid::new_v4().to_string(), &self.log_path, &self.pid_path);
+        match engine.stop(&req).await {
+            Ok(resp) => Ok(resp.output),
+            Err(e) => {
+                let msg = e.to_string();
+                if let Ok(mut s) = self.inner.lock() {
+                    s.last_error = Some(msg.clone());
+                }
+                Err(msg)
+            }
+        }
+    }
+
+    pub async fn cleanup(&self) -> Result<String, String> {
+        let engine = self
+            .engine
+            .as_ref()
+            .ok_or_else(|| "engine not bound (test build)".to_string())?;
+        let req = Request::new_cleanup(Uuid::new_v4().to_string(), &self.log_path, &self.pid_path);
+        match engine.cleanup(&req).await {
+            Ok(resp) => Ok(resp.output),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     pub fn snapshot(&self) -> Result<Status, String> {
         let s = self.lock()?;
         Ok(s.snapshot_at(Utc::now()))
     }
 
-    fn lock(&self) -> Result<std::sync::MutexGuard<'_, MockState>, String> {
+    /// Event pump 调这个，把引擎事件折叠进 InnerState。
+    /// 公开是为了让 setup 里的 background task 能调（无需保护可见性）。
+    pub fn apply_event(&self, event: &Event) {
+        let Ok(mut s) = self.inner.lock() else {
+            return;
+        };
+        match event {
+            Event::Log(line) => s.push_log(line),
+            Event::Started { pid } => {
+                s.is_running = true;
+                s.started_at = Some(Utc::now());
+                s.last_error = None;
+                s.push_log(format!("started (pid={pid})"));
+            }
+            Event::Stopped { exit_code } => {
+                s.is_running = false;
+                s.started_at = None;
+                s.push_log(format!("stopped (exit_code={exit_code:?})"));
+            }
+            Event::Error(msg) => {
+                s.last_error = Some(msg.clone());
+                s.push_log(format!("engine error: {msg}"));
+            }
+        }
+    }
+
+    fn lock(&self) -> Result<MutexGuard<'_, InnerState>, String> {
         self.inner
             .lock()
             .map_err(|e| format!("state mutex poisoned: {e}"))
     }
 }
 
-/// 重新导出速度边界，方便 commands.rs / 调用方判断。
+/// 测试/setup 用，暴露速度边界。
 #[allow(dead_code)]
 pub const SPEED_BOUNDS: (f64, f64) = (fake_run_core::MIN_SPEED_MPS, fake_run_core::MAX_SPEED_MPS);
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fake_run_core::{duration_text, MAX_SPEED_MPS};
+
+    fn dummy() -> AppState {
+        AppState::new_dummy()
+    }
 
     #[test]
-    fn default_state_is_idle() {
-        let app = AppState::default();
+    fn default_snapshot_is_idle() {
+        let app = dummy();
         let snap = app.snapshot().unwrap();
         assert!(!snap.is_running);
         assert_eq!(snap.elapsed_seconds, 0);
         assert!(snap.remaining_seconds > 0);
-        assert_eq!(snap.recent_log.len(), 0);
-        assert!(snap.last_error.is_none());
+        assert!(snap.recent_log.is_empty());
     }
 
     #[test]
-    fn start_marks_running_and_clamps_speed() {
-        let app = AppState::default();
-        app.start(99.0).unwrap();
+    fn started_event_marks_running_and_records_pid() {
+        let app = dummy();
+        app.apply_event(&Event::Started { pid: 12345 });
         let snap = app.snapshot().unwrap();
         assert!(snap.is_running);
-        assert_eq!(snap.speed_mps, MAX_SPEED_MPS);
-        assert!(snap.recent_log.iter().any(|l| l.contains("start")));
+        assert!(snap.recent_log.iter().any(|l| l.contains("pid=12345")));
     }
 
     #[test]
-    fn double_start_is_rejected() {
-        let app = AppState::default();
-        app.start(4.0).unwrap();
-        assert!(app.start(4.0).is_err());
-    }
-
-    #[test]
-    fn stop_is_idempotent() {
-        let app = AppState::default();
-        app.stop().unwrap();
-        app.start(2.0).unwrap();
-        app.stop().unwrap();
-        app.stop().unwrap();
+    fn stopped_event_clears_running() {
+        let app = dummy();
+        app.apply_event(&Event::Started { pid: 1 });
+        app.apply_event(&Event::Stopped { exit_code: Some(0) });
         let snap = app.snapshot().unwrap();
         assert!(!snap.is_running);
+        assert_eq!(snap.elapsed_seconds, 0);
     }
 
     #[test]
-    fn cleanup_clears_log_and_state() {
-        let app = AppState::default();
-        app.start(3.0).unwrap();
-        app.cleanup().unwrap();
+    fn log_event_appends_with_timestamp() {
+        let app = dummy();
+        app.apply_event(&Event::Log("hello world".into()));
         let snap = app.snapshot().unwrap();
-        assert!(!snap.is_running);
-        // cleanup 后会推一条 "cleanup ok" 日志，所以恰好 1 行
         assert_eq!(snap.recent_log.len(), 1);
+        assert!(snap.recent_log[0].contains("hello world"));
+        assert!(snap.recent_log[0].starts_with('['));
+    }
+
+    #[test]
+    fn error_event_sets_last_error() {
+        let app = dummy();
+        app.apply_event(&Event::Error("boom".into()));
+        let snap = app.snapshot().unwrap();
+        assert_eq!(snap.last_error.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn log_buffer_caps_at_capacity() {
+        let app = dummy();
+        for i in 0..(RECENT_LOG_CAPACITY + 50) {
+            app.apply_event(&Event::Log(format!("line {i}")));
+        }
+        let snap = app.snapshot().unwrap();
+        assert_eq!(snap.recent_log.len(), RECENT_LOG_CAPACITY);
+        // first preserved line should be line 50 (50 oldest dropped)
+        assert!(snap.recent_log[0].contains("line 50"));
     }
 
     #[test]
     fn snapshot_carries_pace_text() {
-        let app = AppState::default();
+        let app = dummy();
         let snap = app.snapshot().unwrap();
         assert!(snap.pace_text.ends_with("/km"));
     }
 
-    #[test]
-    fn duration_helper_round_trips() {
-        // 用一下 fake_run_core 的 duration_text，确保依赖图没断
-        assert_eq!(duration_text(65), "01:05");
+    #[tokio::test]
+    async fn start_without_engine_returns_error() {
+        let app = dummy();
+        let result = app.start(4.7).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not bound"));
     }
 }

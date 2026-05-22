@@ -2,10 +2,12 @@
 
 use async_trait::async_trait;
 use fake_run_core::{Request, Response};
+use serde::Serialize;
 use tokio::sync::broadcast;
 
 /// Events streamed from the engine to subscribers (Tauri host → frontend).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Event {
     /// One line of stdout/stderr captured from the Python subprocess.
     Log(String),
