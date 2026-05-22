@@ -10,3 +10,6 @@ runtime/.uv-cache/
 .DS_Store
 .env
 .env.local
+
+# Third-party repos cloned for inspection or build artefacts; never commit.
+external/

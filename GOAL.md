@@ -31,3 +31,24 @@
 ## Execution log
 
 每完成一个 sub-task commit 一次，commit hash 记在这里。
+
+### 已完成
+
+- `c30b450` Phase 0 · 仓库 + Rust workspace + 3 个 placeholder crate
+- `1ce9c05` Phase 0 · Tauri 2 host + Svelte 5 前端 + 图标 + CI yml
+- `5379f4a` Phase 1 · Swift `RunControlCore` + Python 纯函数全部移植，60 tests pass（6 个城市的 BD-09→WGS-84 golden value 对齐到 1e-9）
+- `ef8c12f` Phase 1 · 修 clippy excessive_precision
+- `a62c364` Phase 2 scaffold · Engine trait + python_runner，6 tests
+- `69c4dc4` Phase 2 · env_setup + cleanup + RealEngine，14 tests
+- `5008315` Phase 3 · macOS osascript + Windows UAC manifest + embed-manifest，15 tests（subagent）
+- `3195af7` Phase 4 · Svelte 5 UI 1:1 移植 + 4 个 mock Tauri commands，8 tests + 190 files type-check 0 errors（subagent）
+- research subagent · `docs/research/android-fake-run-2026-05-22.md`，推荐架构 B
+- Android arch-B 实测 · `docs/research/android-arch-b-smoke-test-2026-05-22.md`：emulator 上 `cmd location providers set-test-provider-location` 注入轨迹 5 点全部到位，dlut-FakeRun APK 也成功 build (~3MB) —— **架构 B 通过验证**，后续 Rust 端只需封装 4 条 adb 命令
+
+### 后续要看的
+
+- 集成验证：`cargo test --workspace` + `cargo tauri dev` 弹出窗口
+- 把 mock 后端换成真 `RealEngine`，端到端串通"点'开始' → spawn Python → 日志流到 UI"
+- 实装 `crates/fake-run-engine/src/android.rs`（约 100 行 Rust 封装 4 条 adb 命令）
+- 真机实测：在 root 的 Android 手机上跑步道乐跑/乐动力，看 mock 标志是否被检测
+
