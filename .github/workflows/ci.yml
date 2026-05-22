@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (core crates only)
+        # src-tauri is excluded here because it requires the frontend dist
+        # to be built first; the frontend job below covers it.
+        run: cargo clippy -p fake-run-core -p fake-run-engine -p fake-run-platform --all-targets -- -D warnings
+
+      - name: cargo test (core crates)
+        run: cargo test -p fake-run-core -p fake-run-engine -p fake-run-platform --no-fail-fast
+
+  frontend:
+    name: Frontend + Tauri build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Type-check Svelte
+        run: npm run check
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: cargo check (tauri host)
+        run: cargo check -p fake-run-app

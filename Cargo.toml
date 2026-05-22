@@ -4,7 +4,7 @@ members = [
     "crates/fake-run-core",
     "crates/fake-run-engine",
     "crates/fake-run-platform",
-    # "src-tauri",  # re-enabled in Phase 0 Task 0.2 once tauri.conf.json + frontend stub exist
+    "src-tauri",
 ]
 
 [workspace.package]
