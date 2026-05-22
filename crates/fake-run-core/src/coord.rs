@@ -68,6 +68,7 @@ pub fn haversine_meters(lat1: f64, lng1: f64, lat2: f64, lng2: f64) -> f64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::excessive_precision)] // golden values copied verbatim from Python output
 mod tests {
     use super::*;
 
