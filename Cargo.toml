@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/fake-run-core",
+    "crates/fake-run-engine",
+    "crates/fake-run-platform",
+    # "src-tauri",  # re-enabled in Phase 0 Task 0.2 once tauri.conf.json + frontend stub exist
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.79"
+license = "MIT"
+authors = ["haoqing <dev@haoqing.dev>"]
+repository = "https://github.com/haoqing/fake-run"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+sysinfo = "0.31"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+async-trait = "0.1"
