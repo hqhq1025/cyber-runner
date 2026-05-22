@@ -12,7 +12,7 @@
 //!   （legacy helper 不把 exit code 写在 response 里）
 
 use std::io::SeekFrom;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,7 +21,7 @@ use chrono::{DateTime, Utc};
 use fake_run_core::{Request, Response};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, BufReader};
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::broadcast::{self, Sender};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -56,7 +56,10 @@ struct SwiftResponse {
     id: String,
     status: i32,
     output: String,
+    /// Helper 写但我们暂时不消费；保留字段是为了 schema 完整性，
+    /// 万一以后要做"过期响应"检测。
     #[serde(default)]
+    #[allow(dead_code)]
     updated_at: Option<DateTime<Utc>>,
 }
 
