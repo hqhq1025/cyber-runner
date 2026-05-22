@@ -1,10 +1,14 @@
 //! fake-run Tauri host 入口。
 //!
 //! Setup 流程：
-//! 1. 解析 runtime_dir（沿用 legacy Run Control 在 `~/Library/Application Support/RunControl/runtime`
-//!    的 venv 和 `main.py`）；如果用户希望换路径，未来从配置文件读
-//! 2. 构造 `RealEngine` 包成 `Arc`，给 `AppState` 一份
+//! 1. 选引擎后端：
+//!    - macOS + legacy RunControl helper 已安装并跑着 → `LegacyHelperEngine`
+//!      （走 file-IPC 给 root LaunchDaemon，与 Swift Run Control 同款通道）
+//!    - 否则 → `RealEngine`（在 Tauri 进程内直接 spawn python，
+//!      mac 这种 case 上跑不通因为没 root；留给 Linux / 未来 Windows 用）
+//! 2. 包成 `Arc<dyn Engine>` 给 `AppState`
 //! 3. 在 setup 里 spawn 一个 tokio task：订阅 engine events，逐条 `apply_event`
+//!    并 `app_handle.emit("engine_event", ...)`
 
 mod commands;
 mod state;
@@ -12,7 +16,7 @@ mod state;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use fake_run_engine::{Engine, RealEngine};
+use fake_run_engine::{legacy_helper_available, Engine, LegacyHelperEngine, RealEngine};
 use state::AppState;
 use tauri::{Emitter, Manager};
 
@@ -31,12 +35,22 @@ fn default_runtime_dir() -> PathBuf {
         .join(DEFAULT_RUNTIME_REL)
 }
 
-pub fn run() {
-    let runtime_dir = default_runtime_dir();
-    let base_dir = default_base_dir();
-    tracing::info!(?runtime_dir, ?base_dir, "starting fake-run");
+/// 选最合适的引擎后端。
+/// 优先级：macOS legacy helper > RealEngine direct-spawn。
+fn pick_engine() -> Arc<dyn Engine> {
+    if cfg!(target_os = "macos") && legacy_helper_available() {
+        tracing::info!("using LegacyHelperEngine (legacy Swift RunControl helper detected)");
+        Arc::new(LegacyHelperEngine::new()) as Arc<dyn Engine>
+    } else {
+        let runtime = default_runtime_dir();
+        tracing::info!(?runtime, "using RealEngine (direct python spawn)");
+        Arc::new(RealEngine::new(runtime)) as Arc<dyn Engine>
+    }
+}
 
-    let engine = Arc::new(RealEngine::new(runtime_dir));
+pub fn run() {
+    let base_dir = default_base_dir();
+    let engine = pick_engine();
     let app_state = AppState::new_real(engine.clone(), base_dir);
 
     tauri::Builder::default()

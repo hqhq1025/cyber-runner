@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::{DateTime, Utc};
 use fake_run_core::{clamp_speed, pace_text, Request};
-use fake_run_engine::{Engine, Event, RealEngine};
+use fake_run_engine::{Engine, Event};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -95,19 +95,21 @@ impl InnerState {
     }
 }
 
-/// AppState 对外接口。生产 (`new_real`) 持 `RealEngine`；测试 (`new_dummy`)
+/// AppState 对外接口。生产 (`new_real`) 持任意 `Engine` 实现（macOS 默认走
+/// `LegacyHelperEngine`，其他平台走 `RealEngine`）；测试 (`new_dummy`)
 /// 不绑引擎，便于单测事件 → InnerState 的状态机。
 pub struct AppState {
     inner: Mutex<InnerState>,
-    engine: Option<Arc<RealEngine>>,
+    engine: Option<Arc<dyn Engine>>,
     log_path: String,
     pid_path: String,
 }
 
 impl AppState {
-    /// 生产构造：绑一个共享的 `RealEngine`。`runtime_dir` 通常是
-    /// `~/Library/Application Support/RunControl/runtime`（沿用 legacy Run Control 的 venv 和 main.py）。
-    pub fn new_real(engine: Arc<RealEngine>, base_dir: PathBuf) -> Self {
+    /// 生产构造：绑一个共享的引擎实现（trait object）。
+    /// `base_dir` 通常是 `~/Library/Application Support/RunControl`（沿用
+    /// legacy Run Control 的 log/pid 路径）。
+    pub fn new_real(engine: Arc<dyn Engine>, base_dir: PathBuf) -> Self {
         let log_path = base_dir.join("run.log").to_string_lossy().into_owned();
         let pid_path = base_dir.join("run.pid").to_string_lossy().into_owned();
         Self {
