@@ -798,6 +798,7 @@ dependencies = [
 name = "fake-run-app"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "embed-manifest",
  "fake-run-core",
  "fake-run-engine",
@@ -826,6 +827,8 @@ name = "fake-run-engine"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
+ "dirs 5.0.1",
  "fake-run-core",
  "fake-run-platform",
  "serde",

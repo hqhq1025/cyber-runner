@@ -12,6 +12,7 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "fake run",
         "width": 880,
         "height": 600,
