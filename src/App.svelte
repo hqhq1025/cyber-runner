@@ -107,8 +107,8 @@
         </svg>
       </span>
       <div class="brand-text">
-        <h1 class="brand-title">fake run</h1>
-        <p class="brand-subtitle">西土城路线 · iOS 设备定位测试</p>
+        <h1 class="brand-title">Cyber Runner</h1>
+        <p class="brand-subtitle">赛博校园跑 · iOS 设备定位模拟</p>
       </div>
     </div>
 

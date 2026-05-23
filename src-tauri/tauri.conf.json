@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "fake run",
+  "productName": "Cyber Runner",
   "version": "0.1.0",
-  "identifier": "dev.haoqing.fake-run",
+  "identifier": "dev.haoqing.cyber-runner",
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "fake run",
+        "title": "Cyber Runner",
         "width": 720,
         "height": 540,
         "minWidth": 620,
@@ -37,7 +37,7 @@
       "icons/icon.ico"
     ],
     "category": "Utility",
-    "shortDescription": "Cross-platform iOS location simulator.",
-    "longDescription": "fake run drives an iOS device's reported GPS along a configured route using pymobiledevice3."
+    "shortDescription": "Cyber Runner — cross-platform iOS location simulator.",
+    "longDescription": "Cyber Runner is a cross-platform desktop console for fake-running iOS devices via pymobiledevice3. Plug a route in, press start, let the city think you're moving."
   }
 }
