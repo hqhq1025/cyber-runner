@@ -545,6 +545,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cyber-runner-helper"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "cyber-runner-core",
+ "cyber-runner-engine",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "cyber-runner-platform"
 version = "0.1.0"
 dependencies = [

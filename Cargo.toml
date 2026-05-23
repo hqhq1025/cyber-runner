@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/cyber-runner-core",
     "crates/cyber-runner-engine",
+    "crates/cyber-runner-helper",
     "crates/cyber-runner-platform",
     "src-tauri",
 ]

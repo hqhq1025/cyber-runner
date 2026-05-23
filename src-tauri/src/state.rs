@@ -238,7 +238,10 @@ impl AppState {
 
 /// 测试/setup 用，暴露速度边界。
 #[allow(dead_code)]
-pub const SPEED_BOUNDS: (f64, f64) = (cyber_runner_core::MIN_SPEED_MPS, cyber_runner_core::MAX_SPEED_MPS);
+pub const SPEED_BOUNDS: (f64, f64) = (
+    cyber_runner_core::MIN_SPEED_MPS,
+    cyber_runner_core::MAX_SPEED_MPS,
+);
 
 #[cfg(test)]
 mod tests {
