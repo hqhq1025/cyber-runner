@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/fake-run-core",
-    "crates/fake-run-engine",
-    "crates/fake-run-platform",
+    "crates/cyber-runner-core",
+    "crates/cyber-runner-engine",
+    "crates/cyber-runner-platform",
     "src-tauri",
 ]
 

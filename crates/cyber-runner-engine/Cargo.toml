@@ -1,13 +1,13 @@
 [package]
-name = "fake-run-engine"
+name = "cyber-runner-engine"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-fake-run-core = { path = "../fake-run-core" }
-fake-run-platform = { path = "../fake-run-platform" }
+cyber-runner-core = { path = "../cyber-runner-core" }
+cyber-runner-platform = { path = "../cyber-runner-platform" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

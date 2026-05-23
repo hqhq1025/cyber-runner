@@ -1,4 +1,4 @@
-//! `fake-run-platform` — OS-specific privilege escalation and
+//! `cyber-runner-platform` — OS-specific privilege escalation and
 //! service installation. Everything here is `cfg`-gated by target OS.
 
 #[cfg(target_os = "macos")]

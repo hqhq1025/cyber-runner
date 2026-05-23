@@ -38,7 +38,7 @@ mod tests {
 
     /// `tauri::test::mock_builder` 起一个完整 app，验证 4 个 command 都注册成功 +
     /// 在不接 RealEngine 的 dummy state 下 `status` 仍能跑、`start` 返回 not-bound 错误
-    /// （把真正的引擎集成测留给 fake-run-engine 自己的 integration tests）。
+    /// （把真正的引擎集成测留给 cyber-runner-engine 自己的 integration tests）。
     #[test]
     fn mock_app_registers_all_four_commands() {
         let app = mock_builder()

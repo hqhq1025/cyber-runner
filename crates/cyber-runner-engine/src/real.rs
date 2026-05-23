@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::Local;
-use fake_run_core::{Request, Response};
+use cyber_runner_core::{Request, Response};
 use tokio::sync::broadcast::{self, Sender};
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -67,7 +67,7 @@ impl RealEngine {
 
     async fn read_existing_pid(pid_path: &str) -> Option<u32> {
         let text = tokio::fs::read_to_string(pid_path).await.ok()?;
-        fake_run_core::running_pid_from(&text).map(|p| p as u32)
+        cyber_runner_core::running_pid_from(&text).map(|p| p as u32)
     }
 
     async fn write_pid(pid_path: &str, pid: u32) -> Result<(), EngineError> {
@@ -207,7 +207,7 @@ impl Engine for RealEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fake_run_core::Request;
+    use cyber_runner_core::Request;
 
     #[tokio::test]
     async fn stop_with_no_pid_file_returns_ok() {

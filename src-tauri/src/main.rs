@@ -8,5 +8,5 @@ fn main() {
         )
         .init();
 
-    fake_run_app_lib::run();
+    cyber_runner_app_lib::run();
 }

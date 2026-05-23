@@ -3,7 +3,7 @@
 //! 来 spawn Python，避免在 Tauri 端自己实现特权提升。
 //!
 //! 协议：写 `<base>/commands/request-<UUID>.json`，轮询 `<base>/commands/response-<UUID>.json`，
-//! 与 [`crates/fake-run-core::Request`] 字段映射成 Swift 端使用的 camelCase
+//! 与 [`crates/cyber-runner-core::Request`] 字段映射成 Swift 端使用的 camelCase
 //! `RunControlRequest`（详见 `~/Documents/Github/run/Sources/RunControlCore/RunControlCommand.swift`）。
 //!
 //! Events：
@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use fake_run_core::{Request, Response};
+use cyber_runner_core::{Request, Response};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -301,9 +301,9 @@ mod tests {
     fn make_req() -> Request {
         Request::new_start(
             "outer-id",
-            "/tmp/fake-run-test/run.log",
-            "/tmp/fake-run-test/run.pid",
-            fake_run_core::DEFAULT_ROUTE,
+            "/tmp/cyber-runner-test/run.log",
+            "/tmp/cyber-runner-test/run.pid",
+            cyber_runner_core::DEFAULT_ROUTE,
             4.7,
         )
     }
@@ -354,9 +354,9 @@ mod tests {
         let json = serde_json::to_value(&swift).unwrap();
         assert_eq!(json["action"], "start");
         assert_eq!(json["id"], "ABC");
-        assert_eq!(json["logPath"], "/tmp/fake-run-test/run.log");
-        assert_eq!(json["pidPath"], "/tmp/fake-run-test/run.pid");
-        assert_eq!(json["routeConfig"], fake_run_core::DEFAULT_ROUTE);
+        assert_eq!(json["logPath"], "/tmp/cyber-runner-test/run.log");
+        assert_eq!(json["pidPath"], "/tmp/cyber-runner-test/run.pid");
+        assert_eq!(json["routeConfig"], cyber_runner_core::DEFAULT_ROUTE);
         assert_eq!(json["speedMetersPerSecond"], 4.7);
     }
 

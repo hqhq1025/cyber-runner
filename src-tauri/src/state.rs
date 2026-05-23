@@ -1,4 +1,4 @@
-//! 真后端：包一层 `AppState` 把 [`fake_run_engine::RealEngine`] 暴露给 Tauri commands。
+//! 真后端：包一层 `AppState` 把 [`cyber_runner_engine::RealEngine`] 暴露给 Tauri commands。
 //!
 //! 关键约束：commands 层签名（`start(speed) -> Result<String,String>` 等）不变，
 //! 仅替换 `AppState` 内部 —— Phase 4 留下的 `MockState` 退役。
@@ -14,8 +14,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use chrono::{DateTime, Utc};
-use fake_run_core::{clamp_speed, pace_text, Request};
-use fake_run_engine::{Engine, Event};
+use cyber_runner_core::{clamp_speed, pace_text, Request};
+use cyber_runner_engine::{Engine, Event};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -126,8 +126,8 @@ impl AppState {
         Self {
             inner: Mutex::new(InnerState::default()),
             engine: None,
-            log_path: "/tmp/fake-run-test.log".into(),
-            pid_path: "/tmp/fake-run-test.pid".into(),
+            log_path: "/tmp/cyber-runner-test.log".into(),
+            pid_path: "/tmp/cyber-runner-test.pid".into(),
         }
     }
 
@@ -152,7 +152,7 @@ impl AppState {
             Uuid::new_v4().to_string(),
             &self.log_path,
             &self.pid_path,
-            fake_run_core::DEFAULT_ROUTE,
+            cyber_runner_core::DEFAULT_ROUTE,
             speed,
         );
         match engine.start(&req).await {
@@ -238,7 +238,7 @@ impl AppState {
 
 /// 测试/setup 用，暴露速度边界。
 #[allow(dead_code)]
-pub const SPEED_BOUNDS: (f64, f64) = (fake_run_core::MIN_SPEED_MPS, fake_run_core::MAX_SPEED_MPS);
+pub const SPEED_BOUNDS: (f64, f64) = (cyber_runner_core::MIN_SPEED_MPS, cyber_runner_core::MAX_SPEED_MPS);
 
 #[cfg(test)]
 mod tests {

@@ -1,12 +1,12 @@
 [package]
-name = "fake-run-app"
+name = "cyber-runner-app"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [lib]
-name = "fake_run_app_lib"
+name = "cyber_runner_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -17,8 +17,8 @@ embed-manifest = "1"
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
-fake-run-core = { path = "../crates/fake-run-core" }
-fake-run-engine = { path = "../crates/fake-run-engine" }
+cyber-runner-core = { path = "../crates/cyber-runner-core" }
+cyber-runner-engine = { path = "../crates/cyber-runner-engine" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

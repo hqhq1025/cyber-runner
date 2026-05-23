@@ -1,5 +1,5 @@
 [package]
-name = "fake-run-platform"
+name = "cyber-runner-platform"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

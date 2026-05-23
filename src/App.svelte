@@ -225,7 +225,7 @@
   <section class="log-panel">
     <div class="log-head">
       <span class="log-title">日志</span>
-      <span class="log-path">mock://state/in-memory</span>
+      <span class="log-path">~/Library/Application Support/CyberRunner/run.log</span>
     </div>
     {#if status.lastError}
       <div class="error-line">{status.lastError}</div>

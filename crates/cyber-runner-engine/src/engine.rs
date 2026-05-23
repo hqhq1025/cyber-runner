@@ -1,7 +1,7 @@
 //! Engine trait + shared event/error types.
 
 use async_trait::async_trait;
-use fake_run_core::{Request, Response};
+use cyber_runner_core::{Request, Response};
 use serde::Serialize;
 use tokio::sync::broadcast;
 
