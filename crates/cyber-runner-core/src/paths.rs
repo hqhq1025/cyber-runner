@@ -1,12 +1,12 @@
 //! 文件 / 目录路径，跨平台等价于 Swift `RunControlPaths`。
 //!
-//! - macOS: `~/Library/Application Support/fake-run/`
-//! - Windows: `%LOCALAPPDATA%\fake-run\`
-//! - Linux: `$XDG_DATA_HOME/fake-run/` 或 `~/.local/share/fake-run/`
+//! - macOS: `~/Library/Application Support/cyber-runner/`
+//! - Windows: `%LOCALAPPDATA%\cyber-runner\`
+//! - Linux: `$XDG_DATA_HOME/cyber-runner/` 或 `~/.local/share/cyber-runner/`
 
 use std::path::{Path, PathBuf};
 
-const APP_DIR: &str = "fake-run";
+const APP_DIR: &str = "cyber-runner";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {

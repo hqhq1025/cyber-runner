@@ -13,7 +13,7 @@ edition = "2021"
 rust-version = "1.79"
 license = "MIT"
 authors = ["haoqing <dev@haoqing.dev>"]
-repository = "https://github.com/haoqing/fake-run"
+repository = "https://github.com/haoqing/cyber-runner"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -1,6 +1,6 @@
 //! Windows privilege checks.
 //!
-//! The fake-run app is shipped with a UAC manifest requesting
+//! The Cyber Runner app is shipped with a UAC manifest requesting
 //! `requireAdministrator`, so a normal user launch should already be elevated.
 //! We expose [`is_running_elevated`] so the rest of the app can hard-fail
 //! early (with a helpful error) if for some reason the elevation didn't

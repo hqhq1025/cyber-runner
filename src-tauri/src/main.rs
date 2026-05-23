@@ -1,4 +1,4 @@
-//! fake-run Tauri host.
+//! Cyber Runner Tauri host.
 
 fn main() {
     tracing_subscriber::fmt()

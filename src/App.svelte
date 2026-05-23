@@ -32,7 +32,7 @@
 
   const statusBadgeText = $derived(isRunning ? "运行中" : "未运行");
 
-  // ===== 工具函数（与 Rust fake_run_core::{duration_text,...} 对齐）=====
+  // ===== 工具函数（与 Rust cyber_runner_core::{duration_text,...} 对齐）=====
   function formatClock(d: Date): string {
     const hh = d.getHours().toString().padStart(2, "0");
     const mm = d.getMinutes().toString().padStart(2, "0");

@@ -1,36 +1,49 @@
 # Cyber Runner
 
-Cross-platform (macOS + Windows) iOS location simulator built with Tauri + Rust.
+赛博校园跑 —— 你手机说在跑，你没动。
 
-Codename **赛博校园跑** — your phone says you're running, you're not.
+Cross-platform (macOS · Windows) iOS location simulator built with Tauri 2 + Rust + Svelte 5.
 
-Reuses the existing Python engine that talks to the device via
-[`pymobiledevice3`](https://github.com/doronz88/pymobiledevice3).
+Reuses the open-source [`pymobiledevice3`](https://github.com/doronz88/pymobiledevice3)
+to drive an iOS device's DVT LocationSimulation service along a configured
+route.
 
 ## Status
 
 Work in progress. See `docs/plans/2026-05-22-fake-run-cross-platform.md` in
-the sibling `run/` repository for the implementation plan and `GOAL.md`
-in this repo for the execution log.
+the sibling `run/` repository for the original plan (project was codenamed
+"fake-run" pre-rebrand), and `GOAL.md` here for the execution log.
 
 ## Layout
 
 ```
-fake-run/                       (repo dir — kept for git history)
+cyber-runner/
 ├── crates/
-│   ├── fake-run-core/          # shared types, pure logic, no I/O
-│   ├── fake-run-engine/        # process orchestration, log streaming
-│   └── fake-run-platform/      # macOS / Windows privilege escalation
-├── src-tauri/                  # Tauri host (Rust) — productName "Cyber Runner"
+│   ├── cyber-runner-core/      # shared types, pure logic, no I/O
+│   ├── cyber-runner-engine/    # process orchestration, log streaming,
+│   │                           # LegacyHelperEngine bridge
+│   └── cyber-runner-platform/  # macOS / Windows privilege escalation
+├── src-tauri/                  # Tauri host — productName "Cyber Runner",
+│                               # bundle id dev.haoqing.cyber-runner
 ├── src/                        # Svelte 5 frontend
+├── scripts/                    # drive_android.py + bootstrap helpers
 └── docs/                       # research + plans
 ```
 
-> Internal Rust crate names still use the `fake-run-` prefix because
-> renaming them would churn every import. They're invisible to end users.
+App data lives at:
+- macOS: `~/Library/Application Support/CyberRunner/`
+- Windows: `%LOCALAPPDATA%\cyber-runner\`
 
 ## Toolchain
 
 - Rust stable (≥ 1.79)
 - Node 20+
-- Python 3.11+
+- Python 3.11+ (for the embedded engine at runtime)
+
+## Build
+
+```bash
+npm install
+npm run tauri dev       # dev window
+npm run tauri build     # release .app / .msi
+```

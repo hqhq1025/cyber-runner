@@ -35,10 +35,10 @@ jobs:
       - name: cargo clippy (core crates only)
         # src-tauri is excluded here because it requires the frontend dist
         # to be built first; the frontend job below covers it.
-        run: cargo clippy -p fake-run-core -p fake-run-engine -p fake-run-platform --all-targets -- -D warnings
+        run: cargo clippy -p cyber-runner-core -p cyber-runner-engine -p cyber-runner-platform --all-targets -- -D warnings
 
       - name: cargo test (core crates)
-        run: cargo test -p fake-run-core -p fake-run-engine -p fake-run-platform --no-fail-fast
+        run: cargo test -p cyber-runner-core -p cyber-runner-engine -p cyber-runner-platform --no-fail-fast
 
   frontend:
     name: Frontend + Tauri build (${{ matrix.os }})
@@ -71,4 +71,4 @@ jobs:
         run: npm run build
 
       - name: cargo check (tauri host)
-        run: cargo check -p fake-run-app
+        run: cargo check -p cyber-runner-app

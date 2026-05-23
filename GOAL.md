@@ -1,10 +1,10 @@
-# fake-run · Goal-Mode Plan
+# Cyber Runner · Goal-Mode Plan
 
 **Started:** 2026-05-22
 
 ## Goal
 
-把 `~/Documents/Github/fake-run/` 推到一个 **"在 mac 上 `cargo tauri dev` 启动后，点'开始'能 spawn Python 引擎并把日志流到 UI 上"** 的端到端 MVP，外加全套单元测试。Windows 这一轮只保证编译过 + UAC manifest 就绪，真机验证留到下一轮。
+把 `~/Documents/Github/cyber-runner/` 推到一个 **"在 mac 上 `cargo tauri dev` 启动后，点'开始'能 spawn Python 引擎并把日志流到 UI 上"** 的端到端 MVP，外加全套单元测试。Windows 这一轮只保证编译过 + UAC manifest 就绪，真机验证留到下一轮。
 
 ## Out of scope (this run)
 

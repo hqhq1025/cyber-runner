@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fake-run Android driver — 北邮西土城路线版
+Cyber Runner Android driver — 北邮西土城路线版
 
 读 ~/Documents/Github/run/more_route/xitucheng/xitucheng_1.txt（BD-09 坐标）
 → 转 WGS-84
