@@ -59,13 +59,26 @@ async fn main() -> ExitCode {
     let commands_dir = base.join("commands");
     let runtime_dir = base.join("runtime");
     let helper_log = base.join("helper.log");
+    let helper_pid = base.join("helper.pid");
 
     if let Err(err) = fs::create_dir_all(&commands_dir).await {
         eprintln!("cyber-runner-helper: cannot create {commands_dir:?}: {err}");
         return ExitCode::from(1);
     }
-    append_helper_log(&helper_log, &format!("helper started base={base:?}")).await;
-    info!(?base, "cyber-runner-helper started");
+    // 把自己的 PID 写到 helper.pid，让 Tauri host 能检测活性 + 必要时直接 kill。
+    if let Err(err) = fs::write(&helper_pid, std::process::id().to_string()).await {
+        warn!(?err, ?helper_pid, "could not write helper.pid");
+    }
+    append_helper_log(
+        &helper_log,
+        &format!("helper started base={base:?} pid={}", std::process::id()),
+    )
+    .await;
+    info!(
+        ?base,
+        pid = std::process::id(),
+        "cyber-runner-helper started"
+    );
 
     let engine = RealEngine::new(runtime_dir);
 
@@ -79,7 +92,7 @@ async fn main() -> ExitCode {
     let exit_code = loop {
         tokio::select! {
             _ = interval.tick() => {
-                if let Err(err) = scan_once(&commands_dir, &engine, &helper_log).await {
+                if let Err(err) = scan_once(&commands_dir, &engine, &helper_log, &shutdown_tx).await {
                     warn!(?err, "scan iteration failed");
                 }
             }
@@ -100,6 +113,8 @@ async fn main() -> ExitCode {
     if let Err(err) = engine.cleanup(&req).await {
         warn!(?err, "shutdown cleanup failed");
     }
+    // 移走 pid 文件
+    let _ = fs::remove_file(&helper_pid).await;
     append_helper_log(&helper_log, "helper exited cleanly").await;
     exit_code
 }
@@ -146,6 +161,7 @@ async fn scan_once(
     commands_dir: &Path,
     engine: &RealEngine,
     helper_log: &Path,
+    shutdown_tx: &mpsc::Sender<&'static str>,
 ) -> std::io::Result<()> {
     let mut entries = fs::read_dir(commands_dir).await?;
     while let Some(entry) = entries.next_entry().await? {
@@ -156,12 +172,17 @@ async fn scan_once(
         if !name.starts_with("request-") || !name.ends_with(".json") {
             continue;
         }
-        handle_request(&path, engine, helper_log).await;
+        handle_request(&path, engine, helper_log, shutdown_tx).await;
     }
     Ok(())
 }
 
-async fn handle_request(request_path: &Path, engine: &RealEngine, helper_log: &Path) {
+async fn handle_request(
+    request_path: &Path,
+    engine: &RealEngine,
+    helper_log: &Path,
+    shutdown_tx: &mpsc::Sender<&'static str>,
+) {
     let body = match fs::read(request_path).await {
         Ok(b) => b,
         Err(err) => {
@@ -188,12 +209,18 @@ async fn handle_request(request_path: &Path, engine: &RealEngine, helper_log: &P
         cyber_runner_core::Action::Start => engine.start(&req).await,
         cyber_runner_core::Action::Stop => engine.stop(&req).await,
         cyber_runner_core::Action::Cleanup => engine.cleanup(&req).await,
+        cyber_runner_core::Action::Shutdown => {
+            // 写完响应再 break 主循环
+            Ok(Response::ok(&req.id, "shutdown acknowledged"))
+        }
     };
 
     let resp = match response {
         Ok(resp) => resp,
         Err(err) => Response::fail(&req.id, 1, err.to_string()),
     };
+
+    let is_shutdown = matches!(req.action, cyber_runner_core::Action::Shutdown);
 
     let resp_path = request_path
         .parent()
@@ -209,7 +236,7 @@ async fn handle_request(request_path: &Path, engine: &RealEngine, helper_log: &P
     if let Err(err) = fs::write(&resp_path, &encoded).await {
         warn!(?err, ?resp_path, "cannot write response");
     }
-    // 请求文件由 helper 自己删（与 Swift legacy 行为一致）
+    // 请求文件由 helper 自己删（与 legacy 行为一致）
     let _ = fs::remove_file(request_path).await;
     append_helper_log(
         helper_log,
@@ -220,6 +247,10 @@ async fn handle_request(request_path: &Path, engine: &RealEngine, helper_log: &P
         ),
     )
     .await;
+
+    if is_shutdown {
+        let _ = shutdown_tx.send("Shutdown request").await;
+    }
 }
 
 async fn append_helper_log(path: &Path, message: &str) {

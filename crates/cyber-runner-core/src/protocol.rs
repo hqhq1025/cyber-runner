@@ -15,6 +15,9 @@ pub enum Action {
     Start,
     Stop,
     Cleanup,
+    /// 让 helper 主循环优雅退出（写 response + break loop）。
+    /// 由 Tauri host 在 App 退出时发出，避免在用户机上留下常驻 root 进程。
+    Shutdown,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,6 +73,19 @@ impl Request {
             action: Action::Cleanup,
             log_path: log_path.into(),
             pid_path: pid_path.into(),
+            route_config: DEFAULT_ROUTE.into(),
+            speed_meters_per_second: None,
+        }
+    }
+
+    /// "请 helper 优雅退出" 请求 —— Tauri host 在 App 关闭时发。
+    /// log/pid 路径不相关，留空字符串。
+    pub fn new_shutdown(id: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            action: Action::Shutdown,
+            log_path: String::new(),
+            pid_path: String::new(),
             route_config: DEFAULT_ROUTE.into(),
             speed_meters_per_second: None,
         }

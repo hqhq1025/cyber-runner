@@ -50,6 +50,13 @@ pub trait Engine: Send + Sync {
     /// implementations multiplex via `tokio::sync::broadcast` so multiple
     /// subscribers see the same stream.
     fn subscribe(&self) -> broadcast::Receiver<Event>;
+
+    /// 让引擎释放自己启动的所有副进程（helper、python 等）。
+    /// Tauri host 在 App 关闭时调一次。默认 no-op；只有 BundledHelperEngine
+    /// 真的需要它（让自家 root helper 干净退出）。
+    async fn shutdown(&self) -> Result<(), EngineError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
