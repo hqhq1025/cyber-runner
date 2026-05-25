@@ -74,7 +74,8 @@ impl BundledHelperEngine {
         process_alive(pid)
     }
 
-    /// 必要时通过 osascript 启动 helper as root。**会弹密码框**。
+    /// 必要时启动 helper。**macOS 上会弹密码框**（osascript admin），Windows 上
+    /// 依赖 release 的 UAC manifest 让整个 app 已是 admin，spawn 子进程继承权限。
     /// 已在跑就 noop。返回时保证 helper 已在 polling。
     pub async fn ensure_running(&self) -> Result<(), EngineError> {
         let mut ready = self.helper_ready.lock().await;
@@ -85,40 +86,10 @@ impl BundledHelperEngine {
         // 如果 pid 文件还在但进程已死，清掉避免误判
         let _ = fs::remove_file(self.helper_pid_path()).await;
 
-        // 准备 osascript script: 后台启动 helper，把 stdout/stderr 重定向
-        // 用 nohup 避免 osascript 退出后 helper 收到 SIGHUP
-        let helper = self.helper_path.to_string_lossy().to_string();
-        let base = self.base.to_string_lossy().to_string();
-        let stdout_log = self.base.join("helper.stdout.log");
-        let stdout_log = stdout_log.to_string_lossy().to_string();
+        info!(?self.helper_path, ?self.base, "spawning helper");
+        self.spawn_helper_platform().await?;
 
-        // 单引号 escape: 在 Bash 单引号字符串内，每个 ' 用 '\''
-        let shell_cmd = format!(
-            "/bin/mkdir -p {base_q} && /usr/bin/nohup {helper_q} {base_q} > {log_q} 2>&1 &",
-            helper_q = sh_quote(&helper),
-            base_q = sh_quote(&base),
-            log_q = sh_quote(&stdout_log),
-        );
-        // AppleScript 双引号字符串内：\ 和 " 要转义
-        let as_cmd = applescript_escape(&shell_cmd);
-        let script = format!("do shell script \"{as_cmd}\" with administrator privileges");
-
-        info!(?self.helper_path, ?self.base, "spawning helper via osascript (password prompt)");
-        let output = tokio::process::Command::new("/usr/bin/osascript")
-            .args(["-e", &script])
-            .output()
-            .await
-            .map_err(EngineError::Spawn)?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-            return Err(EngineError::Other(format!(
-                "osascript failed (status {}): {}",
-                output.status,
-                stderr.trim()
-            )));
-        }
-
-        // 等 helper.pid 出现 & 进程活
+        // 等 helper.pid 出现 & 进程活 —— 平台无关
         let deadline = std::time::Instant::now() + HELPER_READY_TIMEOUT;
         loop {
             if self.helper_alive().await {
@@ -133,6 +104,119 @@ impl BundledHelperEngine {
             }
             tokio::time::sleep(Duration::from_millis(150)).await;
         }
+    }
+
+    /// macOS：通过 osascript 走 "do shell script ... with administrator privileges"
+    /// 弹一次系统密码框，把 helper 以 root 启动 + 让它 detach 走 launchd 收养。
+    ///
+    /// Why 这个 dance: 不能用 `nohup`。`do shell script with administrator privileges`
+    /// 给的不是真 TTY，macOS 的 nohup 在 tcgetattr 上失败
+    /// (`Inappropriate ioctl for device`) 立刻退出，helper 根本起不来。
+    /// 改用 `( cmd </dev/null >>log 2>&1 & )` 模式：
+    ///   - 子 shell `(...)` 包起来 → 内层 shell 立刻退出，helper 被 launchd 收养
+    ///   - `</dev/null` → osascript 的 stdin pipe 不再被持有，osascript 才能干净返回
+    ///   - `>>log 2>&1` → stdout/stderr 落盘，不挂在 osascript 的 pipe 上
+    ///   - 没有 controlling TTY → 没人会发 SIGHUP，nohup 多余
+    #[cfg(target_os = "macos")]
+    async fn spawn_helper_platform(&self) -> Result<(), EngineError> {
+        let helper = self.helper_path.to_string_lossy().to_string();
+        let base = self.base.to_string_lossy().to_string();
+        let stdout_log = self.base.join("helper.stdout.log");
+        let stdout_log = stdout_log.to_string_lossy().to_string();
+
+        let shell_cmd = format!(
+            "/bin/mkdir -p {base_q} && ( {helper_q} {base_q} </dev/null >>{log_q} 2>&1 & )",
+            helper_q = sh_quote(&helper),
+            base_q = sh_quote(&base),
+            log_q = sh_quote(&stdout_log),
+        );
+        // AppleScript 双引号字符串内：\ 和 " 要转义
+        let as_cmd = applescript_escape(&shell_cmd);
+        let script = format!("do shell script \"{as_cmd}\" with administrator privileges");
+
+        info!("invoking osascript (password prompt)");
+        let output = tokio::process::Command::new("/usr/bin/osascript")
+            .args(["-e", &script])
+            .output()
+            .await
+            .map_err(EngineError::Spawn)?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            return Err(EngineError::Other(format!(
+                "osascript failed (status {}): {}",
+                output.status,
+                stderr.trim()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Windows：直接 spawn helper 子进程并 detach。
+    ///
+    /// 权限模型 —— 我们**不**在 spawn 时单独提升权限，而是依赖 release bundle 的
+    /// UAC manifest（`requireAdministrator`）让整个 Cyber Runner app 一开始就以
+    /// admin 启动；spawn 出来的子进程默认继承 admin token，于是 helper 也 admin。
+    /// dev 模式（cargo run）跑出来的 app 是普通权限，spawn 出的 helper 也是普通权限
+    /// —— 真机 USB / Mobile Device Service 访问会受限，但能完成"编译过 + 起空窗口"
+    /// 的最小目标（与 GOAL.md 一致）。
+    ///
+    /// CREATE_NO_WINDOW (0x08000000)：不弹控制台黑框
+    /// DETACHED_PROCESS (0x00000008)：脱离父进程 console，父进程退出不影响 helper
+    #[cfg(target_os = "windows")]
+    async fn spawn_helper_platform(&self) -> Result<(), EngineError> {
+        // tokio::process::Command 在 Windows 上有 inherent `creation_flags`，
+        // 不需要 import std::os::windows::process::CommandExt
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+        fs::create_dir_all(&self.base)
+            .await
+            .map_err(EngineError::Io)?;
+
+        let stdout_log = self.base.join("helper.stdout.log");
+        let stdout_file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&stdout_log)
+            .map_err(EngineError::Io)?;
+        let stderr_file = stdout_file.try_clone().map_err(EngineError::Io)?;
+
+        tokio::process::Command::new(&self.helper_path)
+            .arg(&self.base)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(stdout_file))
+            .stderr(std::process::Stdio::from(stderr_file))
+            .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+            .spawn()
+            .map_err(EngineError::Spawn)?;
+        Ok(())
+    }
+
+    /// Linux / 其它 Unix fallback：直接 spawn。用户应该自己 sudo / pkexec 拉起整个
+    /// app；这里不内置 pkexec/gksu 弹框（distro 太多不好统一）。如果需要 root 但没
+    /// 拿到，helper 会在 pymobiledevice3 那一步报错。
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    async fn spawn_helper_platform(&self) -> Result<(), EngineError> {
+        fs::create_dir_all(&self.base)
+            .await
+            .map_err(EngineError::Io)?;
+
+        let stdout_log = self.base.join("helper.stdout.log");
+        let stdout_file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&stdout_log)
+            .map_err(EngineError::Io)?;
+        let stderr_file = stdout_file.try_clone().map_err(EngineError::Io)?;
+
+        tokio::process::Command::new(&self.helper_path)
+            .arg(&self.base)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(stdout_file))
+            .stderr(std::process::Stdio::from(stderr_file))
+            .spawn()
+            .map_err(EngineError::Spawn)?;
+        Ok(())
     }
 
     /// 发 `Action::Shutdown` 请求让 helper 干净退出（不需要 root）。
@@ -255,6 +339,7 @@ fn parse_pid(output: &str) -> Option<u32> {
     None
 }
 
+#[cfg(target_os = "macos")]
 fn sh_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
@@ -269,6 +354,7 @@ fn sh_quote(s: &str) -> String {
     out
 }
 
+#[cfg(target_os = "macos")]
 fn applescript_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
@@ -293,6 +379,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn sh_quote_basic() {
         assert_eq!(sh_quote("hello"), "'hello'");
         assert_eq!(sh_quote("it's"), r"'it'\''s'");
@@ -301,6 +388,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
     fn applescript_escape_basic() {
         assert_eq!(applescript_escape(r"\"), r"\\");
         assert_eq!(applescript_escape("\""), "\\\"");

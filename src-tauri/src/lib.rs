@@ -25,19 +25,23 @@ use state::AppState;
 use tauri::{Emitter, Manager, WindowEvent};
 
 /// Cyber Runner 自己的 base dir —— log / pid / commands / helper.pid 都在这里。
-const APP_BASE_REL: &str = "Library/Application Support/CyberRunner";
-const APP_RUNTIME_REL: &str = "Library/Application Support/CyberRunner/runtime";
+///
+/// 用 `dirs::data_local_dir()` 拿到平台标准位置：
+/// - macOS:   `~/Library/Application Support/CyberRunner` （路径与 v1 完全相同，无迁移）
+/// - Windows: `%LOCALAPPDATA%\CyberRunner` （= `~\AppData\Local\CyberRunner`）
+/// - Linux:   `~/.local/share/CyberRunner`
+const APP_BASE_LEAF: &str = "CyberRunner";
+const APP_RUNTIME_LEAF: &str = "runtime";
 
 fn default_base_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(APP_BASE_REL)
+    dirs::data_local_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(APP_BASE_LEAF)
 }
 
 fn default_runtime_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(APP_RUNTIME_REL)
+    default_base_dir().join(APP_RUNTIME_LEAF)
 }
 
 /// 找 cyber-runner-helper 二进制位置。
@@ -47,14 +51,19 @@ fn find_helper_binary() -> Option<PathBuf> {
     let cur = std::env::current_exe().ok()?;
     let dir = cur.parent()?;
 
-    // dev：target/debug/cyber-runner-app + target/debug/cyber-runner-helper
-    let dev_path = dir.join("cyber-runner-helper");
+    // Cross-platform binary name —— Windows 上是 cyber-runner-helper.exe，
+    // *nix 上是 cyber-runner-helper。EXE_SUFFIX 为 "" / ".exe"。
+    let helper_name = format!("cyber-runner-helper{}", std::env::consts::EXE_SUFFIX);
+
+    // dev：与 app 同目录（cargo target/debug/）。Windows 的 NSIS/MSI bundle 装到
+    // `C:\Program Files\Cyber Runner\` 也是同目录，所以这一条就能 cover dev + win release。
+    let dev_path = dir.join(&helper_name);
     if dev_path.exists() {
         return Some(dev_path);
     }
 
-    // release .app：Contents/MacOS/cyber-runner-app → Contents/Resources/cyber-runner-helper
-    let bundle_path = dir.parent()?.join("Resources").join("cyber-runner-helper");
+    // macOS .app release：Contents/MacOS/cyber-runner-app → Contents/Resources/cyber-runner-helper
+    let bundle_path = dir.parent()?.join("Resources").join(&helper_name);
     if bundle_path.exists() {
         return Some(bundle_path);
     }
@@ -91,6 +100,16 @@ pub fn run() {
     let base_dir = default_base_dir();
     if let Err(err) = std::fs::create_dir_all(&base_dir) {
         tracing::warn!(?err, ?base_dir, "could not create CyberRunner base dir");
+    }
+    // Pre-create commands/ as the **user** (not root). Why: helper runs as
+    // root and would otherwise create commands/ owned by root with mode 755,
+    // making it unwritable for Tauri host (user) when dispatching requests
+    // → "Permission denied (os error 13)". Creating it here means it's owned
+    // by the user; root can still write into a user-owned dir, so helper
+    // works fine. Helper's `create_dir_all` is idempotent → no conflict.
+    let commands_dir = base_dir.join("commands");
+    if let Err(err) = std::fs::create_dir_all(&commands_dir) {
+        tracing::warn!(?err, ?commands_dir, "could not create commands dir");
     }
     let engine = pick_engine(&base_dir);
     let app_state = AppState::new_real(engine.clone(), base_dir);

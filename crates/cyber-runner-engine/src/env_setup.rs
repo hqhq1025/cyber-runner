@@ -37,6 +37,23 @@ pub fn find_uv() -> Option<PathBuf> {
 /// Ensure deps installed in `runtime_dir/.venv`. Emits each output line as
 /// `Event::Log`. Returns Ok on success, Err with stderr-ish output otherwise.
 pub async fn ensure_deps(runtime_dir: &Path, events: &Sender<Event>) -> Result<(), EngineError> {
+    // Fast path: if .venv/bin/python already exists, assume deps are installed
+    // and skip the uv/pip dance. Critical when runtime_dir points at an
+    // already-prepared venv (Stage 4 bundled runtime, or — during dev — a
+    // symlink to legacy RunControl/runtime which has pymobiledevice3 set up).
+    // Without this guard, `uv sync` would run pointlessly each ▶ press,
+    // wasting a few seconds and potentially failing if pyproject.toml is
+    // missing.
+    let venv_python = crate::python_runner::venv_python_path(runtime_dir);
+    if venv_python.exists() {
+        let _ = events.send(Event::Log(format!(
+            "venv ready at {}, skipping ensure_deps",
+            venv_python.display()
+        )));
+        info!(venv = %venv_python.display(), "venv exists, skipping ensure_deps");
+        return Ok(());
+    }
+
     if let Some(uv) = find_uv() {
         info!(uv = %uv.display(), "using uv sync");
         return run_streaming(

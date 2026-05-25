@@ -37,7 +37,6 @@ use chrono::Local;
 use cyber_runner_core::{Request, Response};
 use cyber_runner_engine::{Engine, RealEngine};
 use tokio::fs;
-use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
@@ -65,6 +64,27 @@ async fn main() -> ExitCode {
         eprintln!("cyber-runner-helper: cannot create {commands_dir:?}: {err}");
         return ExitCode::from(1);
     }
+
+    // Single-instance guard：如果 helper.pid 已存在且指向一个仍在运行的进程，
+    // 说明已有 helper 在跑（典型场景：上一轮 tauri dev 退出但 root helper 因
+    // 权限没被 SIGTERM 干掉，又被新 tauri 重新 osascript 拉起一份）。
+    // 多 helper 共享同一个 commands/ 会导致同一 request 被并发处理 → 多 spawn
+    // python，stop 只能干掉一个。直接退出让用户/启动器明确感知问题。
+    if let Ok(existing) = fs::read_to_string(&helper_pid).await {
+        if let Ok(existing_pid) = existing.trim().parse::<u32>() {
+            if existing_pid != std::process::id()
+                && cyber_runner_engine::python_runner::process_alive(existing_pid)
+            {
+                let msg = format!(
+                    "another cyber-runner-helper (pid={existing_pid}) is already running; exiting"
+                );
+                eprintln!("cyber-runner-helper: {msg}");
+                append_helper_log(&helper_log, &msg).await;
+                return ExitCode::from(0);
+            }
+        }
+    }
+
     // 把自己的 PID 写到 helper.pid，让 Tauri host 能检测活性 + 必要时直接 kill。
     if let Err(err) = fs::write(&helper_pid, std::process::id().to_string()).await {
         warn!(?err, ?helper_pid, "could not write helper.pid");
@@ -139,7 +159,9 @@ fn init_tracing() {
         .init();
 }
 
+#[cfg(unix)]
 fn spawn_signal_listener(tx: mpsc::Sender<&'static str>) {
+    use tokio::signal::unix::{signal, SignalKind};
     tokio::spawn(async move {
         let term = signal(SignalKind::terminate());
         let int = signal(SignalKind::interrupt());
@@ -153,6 +175,22 @@ fn spawn_signal_listener(tx: mpsc::Sender<&'static str>) {
             _ => {
                 error!("failed to install signal handlers; helper won't shut down gracefully");
             }
+        }
+    });
+}
+
+/// Windows 没有 SIGTERM/SIGINT 语义；唯一的可移植入口是 Ctrl-C（CTRL_C_EVENT 或
+/// console Close）。日常使用中 helper 退出主要靠两种方式：
+///   1. Tauri host 在 WindowEvent::CloseRequested 时发 Action::Shutdown 请求 → 主循环 break
+///   2. UAC-elevated app 关闭时，OS 把 console 拆掉触发 ctrl_c
+/// 这里只挂 ctrl_c，剩下的优雅退路由 shutdown request 走。
+#[cfg(windows)]
+fn spawn_signal_listener(tx: mpsc::Sender<&'static str>) {
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            let _ = tx.send("CTRL_C").await;
+        } else {
+            error!("failed to install ctrl_c handler; rely on Action::Shutdown to exit");
         }
     });
 }
@@ -183,18 +221,43 @@ async fn handle_request(
     helper_log: &Path,
     shutdown_tx: &mpsc::Sender<&'static str>,
 ) {
-    let body = match fs::read(request_path).await {
+    // 原子认领：在并发多 helper 场景下（单实例 guard 兜不住的极端情况，比如
+    // 旧 helper 刚 crash 还没来得及清 helper.pid，新 helper 拉起来），多个进程
+    // 可能同时在 scan_once 里看到同一个 request 文件。先 rename 成 .claimed —
+    // POSIX rename 是 atomic 的，只有一个 helper 能成功；剩下的会拿到 ENOENT
+    // 并安全跳过，绝不会出现"同一 request 被 spawn 多次 python"的灾难。
+    let claimed_path = {
+        let mut p = request_path.to_path_buf();
+        let name = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("request-unknown.json")
+            .to_string();
+        p.set_file_name(format!("{name}.claimed"));
+        p
+    };
+    if let Err(err) = fs::rename(request_path, &claimed_path).await {
+        if err.kind() == std::io::ErrorKind::NotFound {
+            // 另一个 helper / 这一轮自己上一 tick 已经处理过 → 无声跳过
+            return;
+        }
+        warn!(?err, ?request_path, "could not claim request");
+        return;
+    }
+
+    let body = match fs::read(&claimed_path).await {
         Ok(b) => b,
         Err(err) => {
-            warn!(?err, ?request_path, "cannot read request file");
+            warn!(?err, ?claimed_path, "cannot read claimed request file");
+            let _ = fs::remove_file(&claimed_path).await;
             return;
         }
     };
     let req: Request = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(err) => {
-            warn!(?err, ?request_path, "cannot decode request");
-            let _ = fs::remove_file(request_path).await;
+            warn!(?err, ?claimed_path, "cannot decode request");
+            let _ = fs::remove_file(&claimed_path).await;
             return;
         }
     };
@@ -230,14 +293,15 @@ async fn handle_request(
         Ok(b) => b,
         Err(err) => {
             warn!(?err, "cannot encode response");
+            let _ = fs::remove_file(&claimed_path).await;
             return;
         }
     };
     if let Err(err) = fs::write(&resp_path, &encoded).await {
         warn!(?err, ?resp_path, "cannot write response");
     }
-    // 请求文件由 helper 自己删（与 legacy 行为一致）
-    let _ = fs::remove_file(request_path).await;
+    // 删除 .claimed 标记文件（取代旧版的删除 request 文件）
+    let _ = fs::remove_file(&claimed_path).await;
     append_helper_log(
         helper_log,
         &format!(
