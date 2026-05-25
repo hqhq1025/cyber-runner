@@ -52,33 +52,19 @@
 
   // ===== 事件处理 =====
   // 准备中态：从点 ▶ 到 python 真正开始改 GPS 的过渡阶段。
-  // 后端 engine 报 Started 是 python 子进程"被 spawn"那一刻，不代表 tunnel 已建立。
-  // 实际典型时间线（参考 main.py + tunnel.tunnel）：
-  //   0s:    spawn python (engine: Started)
-  //   ~1s:   init done
-  //   1-12s: trying to start tunnel + 等 iPhone Developer Mode 通道
-  //   12s±:  print "已开始模拟跑步" → GPS 实际开始更新
-  // 这段时间按钮显示"准备中..."，过了再切到"已开始赛博跑步"。
-  // 用户点停止 / 后端报错 → 立刻清掉。
-  const REAL_START_DELAY_MS = 12_000;
-  let preparingTimeoutId = $state<number | null>(null);
-  let preparingDone = $state(false);
+  // 后端 engine 报 Started 只是 python 子进程"被 spawn"那一刻，不代表 tunnel
+  // 已建立。main.py 在 tunnel 完成 + 路线解析完成时打印 "已开始模拟跑步"
+  // (main.py:60) —— 用这个真信号作切换，比 setTimeout 拍 12s 更准（tunnel
+  // 起得快 8s 慢 18s 都能跟）。
+  const RUN_STARTED_MARKER = "已开始模拟跑步";
+  let runStartedLog = $state(false);
 
   function clearPreparing() {
-    if (preparingTimeoutId !== null) {
-      clearTimeout(preparingTimeoutId);
-      preparingTimeoutId = null;
-    }
-    preparingDone = false;
+    runStartedLog = false;
   }
 
   function onStart() {
     clearPreparing();
-    preparingDone = false;
-    preparingTimeoutId = window.setTimeout(() => {
-      preparingDone = true;
-      preparingTimeoutId = null;
-    }, REAL_START_DELAY_MS);
     void runStore.start();
   }
   function onStop() {
@@ -86,22 +72,49 @@
     void runStore.stop();
   }
 
-  // 后端报错 / 进程结束 → 复位准备中态
+  // 监听 recentLog 出现 marker → 切换到 cyber-running。
+  // 用 $effect 而不是 $derived 是因为 runStartedLog 是 sticky bit（一旦 true，
+  // 即便 log buffer 后续把这行挤出去也保持 true，避免抖动）。
+  // isRunning 翻 false 时把 sticky 复位。
   $effect(() => {
-    if (!isRunning) clearPreparing();
+    if (!isRunning) {
+      runStartedLog = false;
+      return;
+    }
+    if (!runStartedLog && status.recentLog.some((l) => l.includes(RUN_STARTED_MARKER))) {
+      runStartedLog = true;
+    }
   });
 
   // 派生：真正在跑步（绝大多数 UI 用这个判断）
-  const isCyberRunning = $derived(isRunning && preparingDone);
-  const isPreparing = $derived((isBusy || isRunning) && !preparingDone);
+  const isCyberRunning = $derived(isRunning && runStartedLog);
+  const isPreparing = $derived(isRunning && !runStartedLog);
 
   const statusBadgeText = $derived(
     isCyberRunning ? "运行中" : isPreparing ? "准备中…" : "未运行",
   );
 
-  function onRefresh() {
-    void runStore.refresh();
+  // 日志自动滚动到底：每次 recentLog 长度变化把 scrollTop 拉到底。
+  // 用户向上滚（脱离底部 > 8px）时停止 auto-scroll，避免打断阅读历史；
+  // 用户手动滚回底部即恢复。
+  let logBodyEl: HTMLDivElement | null = $state(null);
+  let autoScrollLog = $state(true);
+
+  function onLogScroll(e: Event) {
+    const el = e.currentTarget as HTMLDivElement;
+    autoScrollLog = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
   }
+
+  $effect(() => {
+    // 显式依赖 length，触发 scroll
+    status.recentLog.length;
+    if (!autoScrollLog || !logBodyEl) return;
+    const el = logBodyEl;
+    queueMicrotask(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+  });
+
   function onResetCountdown() {
     // Mock 阶段后端没有 "set countdown" 命令；UI 仅做视觉重置。
     // 真接引擎时再加 set_countdown command。
@@ -301,7 +314,7 @@
         {/each}
       </div>
 
-      <!-- ===== 三按钮（嵌在 speed-card 底部，操作组连续）===== -->
+      <!-- ===== 两按钮（嵌在 speed-card 底部，操作组连续）===== -->
       <section class="controls">
         <button
           type="button"
@@ -316,15 +329,6 @@
           disabled={isBusy || !isRunning}
           onclick={onStop}
         >■ 停止</button>
-        <button
-          type="button"
-          class="btn"
-          disabled={isBusy}
-          onclick={onRefresh}
-        >↻ 刷新</button>
-        {#if isBusy || isPreparing}
-          <span class="spinner" aria-label="处理中"></span>
-        {/if}
       </section>
     </article>
 
@@ -332,7 +336,10 @@
   <section class="log-panel">
     <div class="log-head">
       <span class="log-title">日志</span>
-      <span class="log-path">~/Library/Application Support/CyberRunner/run.log</span>
+      <span
+        class="log-path"
+        title="~/Library/Application Support/CyberRunner/run.log"
+      >CyberRunner/run.log</span>
     </div>
     {#if status.lastError}
       <div class="error-line">{status.lastError}</div>
@@ -340,7 +347,7 @@
     {#if runStore.frontendError && isTauri()}
       <div class="error-line">前端: {runStore.frontendError}</div>
     {/if}
-    <div class="log-body">
+    <div class="log-body" bind:this={logBodyEl} onscroll={onLogScroll}>
       {#if status.recentLog.length === 0}
         <div class="log-empty">（尚无日志，点 ▶ 开始 试试）</div>
       {:else}

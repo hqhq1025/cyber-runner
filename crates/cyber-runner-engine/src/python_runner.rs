@@ -42,7 +42,14 @@ pub async fn spawn_python(
     }
 
     let mut cmd = Command::new(python_path);
-    cmd.arg(script)
+    // `-u` forces unbuffered stdout/stderr. Python defaults to block-buffering
+    // when output is a pipe (not a TTY), which means `print(...)` calls in
+    // main.py stay stuck in CPython's buffer for many seconds before flushing
+    // to our reader. UI needs live progress (e.g. the "已开始模拟跑步" marker
+    // that flips the button from preparing → running), so unbuffered is
+    // mandatory here. Equivalent to setting PYTHONUNBUFFERED=1.
+    cmd.arg("-u")
+        .arg(script)
         .current_dir(runtime_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
