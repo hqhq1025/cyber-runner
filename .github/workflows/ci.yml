@@ -70,5 +70,9 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Build helper binary (macOS only — tauri.conf bundle.resources requires it)
+        if: runner.os == 'macOS'
+        run: cargo build --release -p cyber-runner-helper
+
       - name: cargo check (tauri host)
         run: cargo check -p cyber-runner-app
