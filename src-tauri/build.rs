@@ -1,13 +1,15 @@
 fn main() {
+    let mut attributes = tauri_build::Attributes::new();
+
     #[cfg(target_os = "windows")]
     {
-        // Embed the UAC manifest into the produced .exe so Windows shows a
-        // single elevation prompt at launch instead of letting pymobiledevice3
-        // fail later when it tries to open a USB tunnel.
-        embed_manifest::embed_manifest_file("manifest.xml")
-            .expect("failed to embed UAC manifest into cyber-runner-app binary");
-        println!("cargo:rerun-if-changed=manifest.xml");
+        let windows = tauri_build::WindowsAttributes::new()
+            .app_manifest(include_str!("manifest.xml"));
+        attributes = attributes.windows_attributes(windows);
     }
 
-    tauri_build::build();
+    if let Err(e) = tauri_build::try_build(attributes) {
+        println!("{e:#}");
+        std::process::exit(1);
+    }
 }
