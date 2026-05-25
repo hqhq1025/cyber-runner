@@ -31,10 +31,7 @@
   // 配速 = 从 desiredSpeed 派生（在 speed-card 里也用同一份，保证两处永远同步）。
   // Mock 阶段 backend status.paceText 没接真引擎；接进来后如果需要"运行时显示实际配速"
   // 再改成 isRunning ? status.paceText : targetPaceText 二选一。
-
-  const statusBadgeText = $derived(
-    isCyberRunning ? "运行中" : isPreparing ? "准备中…" : "未运行",
-  );
+  // statusBadgeText 依赖下面 isCyberRunning/isPreparing 派生，定义在它们之后
 
   // ===== 工具函数（与 Rust cyber_runner_core::{duration_text,...} 对齐）=====
   function formatClock(d: Date): string {
@@ -97,6 +94,10 @@
   // 派生：真正在跑步（绝大多数 UI 用这个判断）
   const isCyberRunning = $derived(isRunning && preparingDone);
   const isPreparing = $derived((isBusy || isRunning) && !preparingDone);
+
+  const statusBadgeText = $derived(
+    isCyberRunning ? "运行中" : isPreparing ? "准备中…" : "未运行",
+  );
 
   function onRefresh() {
     void runStore.refresh();
