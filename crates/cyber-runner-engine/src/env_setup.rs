@@ -73,8 +73,12 @@ pub async fn ensure_deps(runtime_dir: &Path, events: &Sender<Event>) -> Result<(
     let venv_python = crate::python_runner::venv_python_path(runtime_dir);
 
     if !venv_python.exists() {
-        let system_python =
-            find_system_python().ok_or_else(|| EngineError::PythonNotFound("python3".into()))?;
+        let system_python = find_system_python().ok_or_else(|| {
+            EngineError::PythonNotFound(
+                "no python found (tried python.exe, py.exe, Windows Store, standard install paths)"
+                    .into(),
+            )
+        })?;
         run_streaming(
             &system_python,
             &["-m", "venv", ".venv"],
@@ -105,11 +109,22 @@ pub async fn ensure_deps(runtime_dir: &Path, events: &Sender<Event>) -> Result<(
 
 fn find_system_python() -> Option<PathBuf> {
     let candidates: Vec<PathBuf> = if cfg!(target_os = "windows") {
-        vec![
+        let mut v = vec![
             PathBuf::from("python.exe"),
             PathBuf::from(r"C:\Python312\python.exe"),
             PathBuf::from(r"C:\Python311\python.exe"),
-        ]
+            PathBuf::from(r"C:\Python310\python.exe"),
+            // py.exe launcher (installed with Python via official installer)
+            PathBuf::from(r"C:\Windows\py.exe"),
+        ];
+        // Windows Store Python and standard per-user install
+        if let Some(local) = dirs::data_local_dir() {
+            v.push(local.join(r"Microsoft\WindowsApps\python.exe"));
+            v.push(local.join(r"Programs\Python\Python312\python.exe"));
+            v.push(local.join(r"Programs\Python\Python311\python.exe"));
+            v.push(local.join(r"Programs\Python\Python310\python.exe"));
+        }
+        v
     } else {
         vec![
             PathBuf::from("/opt/homebrew/bin/python3"),
