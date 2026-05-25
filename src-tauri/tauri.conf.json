@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "Cyber Runner",
-        "width": 720,
-        "height": 540,
-        "minWidth": 620,
-        "minHeight": 460,
+        "width": 980,
+        "height": 580,
+        "minWidth": 880,
+        "minHeight": 560,
         "resizable": true,
         "fullscreen": false
       }

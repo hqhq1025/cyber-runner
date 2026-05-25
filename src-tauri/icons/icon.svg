@@ -1,47 +1,84 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <!-- ============================================================
-       Cyber Runner · app icon
-       Concept: rounded-square base (Apple icon proportions) +
-       check-stride hybrid mark + GPS lock ring at apex.
-       Reads as: confirmation / forward motion / location.
+       Cyber Runner · app icon (stadium v4)
+       Concept: top-down 400m athletic stadium — wide terracotta
+       track ring + grass football pitch with center-line / center-
+       circle markings, runner's route as a white line ending in a
+       bright cyber-mint "you are here" dot. CCW (athletic spec).
        ============================================================ -->
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#34c75e" />
-      <stop offset="100%" stop-color="#0a6e4c" />
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0B3D2E"/>
+      <stop offset="100%" stop-color="#125C44"/>
     </linearGradient>
-    <radialGradient id="sheen" cx="0.35" cy="0.2" r="0.9">
-      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.18" />
-      <stop offset="60%" stop-color="#ffffff" stop-opacity="0" />
+    <linearGradient id="track" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#D26049"/>
+      <stop offset="100%" stop-color="#9C3F28"/>
+    </linearGradient>
+    <linearGradient id="grass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4FA565"/>
+      <stop offset="100%" stop-color="#2B7142"/>
+    </linearGradient>
+    <!-- Subtle mowing stripe overlay on the grass -->
+    <linearGradient id="mow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="33%"  stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="34%"  stop-color="#ffffff" stop-opacity="0.06"/>
+      <stop offset="66%"  stop-color="#ffffff" stop-opacity="0.06"/>
+      <stop offset="67%"  stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="sheen" cx="0.3" cy="0.15" r="0.85">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
+    <filter id="dotglow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="14"/>
+    </filter>
+    <!-- Clip path = inner stadium (so mow stripes only show inside the grass) -->
+    <clipPath id="grassClip">
+      <path d="M 368 402 L 656 402 A 110 110 0 0 1 656 622 L 368 622 A 110 110 0 0 1 368 402 Z"/>
+    </clipPath>
   </defs>
 
-  <!-- Rounded square base (radius = 22.37%, matches macOS 11+ app icon) -->
-  <rect x="0" y="0" width="1024" height="1024" rx="229" ry="229" fill="url(#bg)" />
-  <rect x="0" y="0" width="1024" height="1024" rx="229" ry="229" fill="url(#sheen)" />
+  <!-- Plate -->
+  <rect x="0" y="0" width="1024" height="1024" rx="229" ry="229" fill="url(#plate)"/>
+  <rect x="0" y="0" width="1024" height="1024" rx="229" ry="229" fill="url(#sheen)"/>
+  <rect x="4" y="4" width="1016" height="1016" rx="226" ry="226"
+        fill="none" stroke="#ffffff" stroke-opacity="0.07" stroke-width="2"/>
 
-  <!-- Subtle inner highlight bevel (top edge) -->
-  <rect x="6" y="6" width="1012" height="1012" rx="225" ry="225"
-        fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="2" />
+  <!-- Outer stadium — TRACK SURFACE (terracotta). 768×480, hw=384 hh=240 -->
+  <path d="M 368 272 L 656 272 A 240 240 0 0 1 656 752 L 368 752 A 240 240 0 0 1 368 272 Z"
+        fill="url(#track)"/>
 
-  <!-- GPS lock ring (lighter, behind the dot) -->
-  <circle cx="756" cy="282" r="92" fill="none"
-          stroke="#fffceb" stroke-opacity="0.45" stroke-width="22" />
+  <!-- Inner stadium — INFIELD GRASS. Track width 130 → inner hw=254 hh=110 -->
+  <path d="M 368 402 L 656 402 A 110 110 0 0 1 656 622 L 368 622 A 110 110 0 0 1 368 402 Z"
+        fill="url(#grass)"/>
+  <!-- Subtle mowing stripe pattern on the grass -->
+  <rect x="218" y="402" width="588" height="220" fill="url(#mow)" clip-path="url(#grassClip)"/>
 
-  <!-- Check / stride hybrid: low-left dip then long forward-up extension -->
-  <path
-    d="M 230 640 L 384 794 L 756 282"
-    fill="none"
-    stroke="#ffffff"
-    stroke-width="84"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-  />
+  <!-- Soccer pitch markings (white, low opacity so they don't fight the route trace) -->
+  <g stroke="#FFFFFF" stroke-opacity="0.55" fill="none">
+    <!-- center line (halfway line) -->
+    <line x1="512" y1="402" x2="512" y2="622" stroke-width="2.5"/>
+    <!-- center circle -->
+    <circle cx="512" cy="512" r="48" stroke-width="2.5"/>
+  </g>
+  <!-- center spot -->
+  <circle cx="512" cy="512" r="5" fill="#FFFFFF" fill-opacity="0.75"/>
 
-  <!-- GPS lock dot at the apex -->
-  <circle cx="756" cy="282" r="50" fill="#fffceb" />
+  <!-- White track kerbs (outer + inner edges of the track ring) -->
+  <path d="M 368 272 L 656 272 A 240 240 0 0 1 656 752 L 368 752 A 240 240 0 0 1 368 272 Z"
+        fill="none" stroke="#FFFFFF" stroke-width="3.5" stroke-opacity="0.60"/>
+  <path d="M 368 402 L 656 402 A 110 110 0 0 1 656 622 L 368 622 A 110 110 0 0 1 368 402 Z"
+        fill="none" stroke="#FFFFFF" stroke-width="3.5" stroke-opacity="0.60"/>
 
-  <!-- Soft bottom shadow inside the icon (drift of motion) -->
-  <ellipse cx="512" cy="940" rx="280" ry="14"
-           fill="#000000" fill-opacity="0.08" />
+  <!-- Route trace — runner's completed 70% loop, CCW, runs at mid-track r=175 -->
+  <path d="M 512 687 L 656 687 A 175 175 0 0 0 656 337 L 368 337 A 175 175 0 0 0 212.6 432"
+        fill="none" stroke="#FFFFFF" stroke-width="26" stroke-linecap="round"/>
+
+  <!-- Endpoint glow halo (only the dot glows; trace stays clean) -->
+  <circle cx="212.6" cy="432" r="60" fill="#C8FF3D" fill-opacity="0.55" filter="url(#dotglow)"/>
+  <!-- Endpoint core dot -->
+  <circle cx="212.6" cy="432" r="32" fill="#C8FF3D"/>
 </svg>

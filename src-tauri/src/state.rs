@@ -68,7 +68,7 @@ impl InnerState {
             self.recent_log.pop_front();
         }
         let line = line.into();
-        let ts = Utc::now().format("%H:%M:%S");
+        let ts = chrono::Local::now().format("%H:%M:%S");
         self.recent_log.push_back(format!("[{ts}] {line}"));
     }
 
