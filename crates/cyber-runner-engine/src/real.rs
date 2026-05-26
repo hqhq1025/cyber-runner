@@ -260,4 +260,59 @@ mod tests {
         assert!(resp.output.contains("Saved PID is not running"));
         assert!(!pid_path.exists());
     }
+
+    /// This is the regression test for the bug user hit on 2026-05-26:
+    /// closing the app left main.py orphaned (PPID=1) because helper's
+    /// shutdown path only ran cleanup (orphan tunnels) and never invoked
+    /// stop on the real run.pid. Helper main.rs now calls stop with the
+    /// real paths before cleanup; this test asserts that path actually
+    /// kills the live child instead of just returning OK.
+    #[tokio::test]
+    async fn stop_kills_alive_child_referenced_by_pid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_path = dir.path().join("run.pid");
+        let log_path = dir.path().join("run.log");
+
+        // Spawn a live child (sleep 60s) and point run.pid at it.
+        // sleep is available on every unix CI runner; for Windows CI we
+        // skip — Windows path uses taskkill, covered by python_runner tests.
+        #[cfg(unix)]
+        {
+            use std::time::Duration;
+            let mut child = tokio::process::Command::new("sleep")
+                .arg("60")
+                .spawn()
+                .expect("spawn sleep");
+            let pid = child.id().expect("get pid");
+            tokio::fs::write(&pid_path, pid.to_string()).await.unwrap();
+
+            assert!(
+                crate::python_runner::process_alive(pid),
+                "precondition: child {pid} alive"
+            );
+
+            let engine = RealEngine::new("/tmp");
+            let req = Request::new_stop(
+                "t-kill-alive",
+                log_path.to_string_lossy().to_string(),
+                pid_path.to_string_lossy().to_string(),
+            );
+            let resp = engine.stop(&req).await.unwrap();
+            assert_eq!(resp.status, 0, "stop should succeed: {resp:?}");
+
+            // Give the OS a moment to reap.
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert!(
+                !crate::python_runner::process_alive(pid),
+                "child {pid} must be dead after stop()"
+            );
+            assert!(!pid_path.exists(), "run.pid must be removed");
+
+            let _ = child.wait().await;
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (pid_path, log_path);
+        }
+    }
 }
