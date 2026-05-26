@@ -70,9 +70,48 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      - name: Build helper binary (macOS only — tauri.conf bundle.resources requires it)
-        if: runner.os == 'macOS'
+      - name: Build helper binary (required by tauri.{macos,windows}.conf bundle.resources)
         run: cargo build --release -p cyber-runner-helper
 
       - name: cargo check (tauri host)
         run: cargo check -p cyber-runner-app
+
+  runtime-smoke:
+    name: Python runtime smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: uv sync (install runtime deps from pinned uv.lock)
+        working-directory: runtime
+        run: uv sync --frozen
+
+      # Guard against silent dep drift. The whole reason runtime/ exists with
+      # `pymobiledevice3==5.0.4` strict-pinned is that v5 → v9 broke our API
+      # contract (`DvtSecureSocketProxyService` deleted, `LocationSimulation.set`
+      # became async). Any future change that relaxes the pin or bumps the
+      # major version must fail CI here before reaching users.
+      - name: Verify pymobiledevice3 v5 API surface
+        working-directory: runtime
+        shell: bash
+        run: |
+          uv run python -c "
+          from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
+          from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
+          from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import DvtSecureSocketProxyService
+          import inspect
+          assert not inspect.iscoroutinefunction(LocationSimulation.set), \
+              'LocationSimulation.set() is async — pymobiledevice3 got upgraded past v5! run.py needs to be migrated to DvtProvider + await loc.set().'
+          print('OK: pymobiledevice3 v5 API surface intact')
+          "
