@@ -124,14 +124,31 @@ async fn main() -> ExitCode {
         }
     };
 
-    // 退出前发一次 cleanup，杀掉孤儿 tunnel 进程
-    let req = Request::new_cleanup(
-        "shutdown",
+    // 退出前要做两件事：
+    //   1. **停掉主 python 子进程**（如果还在跑）。用真的 base/run.pid + base/run.log。
+    //      没这一步的话：用户关 app 窗口 → Tauri host 发 Shutdown 给 helper →
+    //      helper 退出 → main.py 变孤儿（PPID=1，init 收养），定位继续动；
+    //      下次启动 RealEngine::start 看到 run.pid 里活进程，直接报
+    //      "already running with PID X" 永久卡住。
+    //   2. cleanup 孤儿 tunnel 进程（pymobiledevice3 tunneld 等附属物）。
+    let run_pid_path = base.join("run.pid");
+    let run_log_path = base.join("run.log");
+    let stop_req = Request::new_stop(
+        "shutdown-stop",
+        run_log_path.to_string_lossy().to_string(),
+        run_pid_path.to_string_lossy().to_string(),
+    );
+    if let Err(err) = engine.stop(&stop_req).await {
+        warn!(?err, "shutdown stop (python) failed");
+    }
+
+    let cleanup_req = Request::new_cleanup(
+        "shutdown-cleanup",
         "/tmp/cyber-runner-helper-shutdown.log",
         "/tmp/cyber-runner-helper-shutdown.pid",
     );
-    if let Err(err) = engine.cleanup(&req).await {
-        warn!(?err, "shutdown cleanup failed");
+    if let Err(err) = engine.cleanup(&cleanup_req).await {
+        warn!(?err, "shutdown cleanup (tunnels) failed");
     }
     // 移走 pid 文件
     let _ = fs::remove_file(&helper_pid).await;
