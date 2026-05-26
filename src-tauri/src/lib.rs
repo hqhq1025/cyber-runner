@@ -23,7 +23,7 @@ use cyber_runner_engine::{
     RealEngine,
 };
 use state::AppState;
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 
 /// Cyber Runner 自己的 base dir —— log / pid / commands / helper.pid 都在这里。
 ///
@@ -174,7 +174,7 @@ pub fn run() {
     // 给 WindowEvent::CloseRequested 留一份 engine 句柄，关 App 时调 shutdown()
     let engine_for_shutdown = engine.clone();
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             commands::start,
@@ -197,18 +197,40 @@ pub fn run() {
             });
             Ok(())
         })
-        .on_window_event(move |_window, event| {
-            if matches!(event, WindowEvent::CloseRequested { .. }) {
-                tracing::info!("window close requested; shutting down engine");
-                let engine = engine_for_shutdown.clone();
-                // block on shutdown so we don't exit before helper is gone
-                tauri::async_runtime::block_on(async move {
-                    if let Err(err) = engine.shutdown().await {
-                        tracing::warn!(?err, "engine shutdown failed");
-                    }
-                });
-            }
-        })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    // Hook both quit paths:
+    //   - WindowEvent::CloseRequested  → user clicked the red ✕ on the window
+    //   - RunEvent::ExitRequested      → user did Cmd+Q, Quit menu, or system logout
+    //
+    // Earlier we only had `.on_window_event(... CloseRequested ...)`, which
+    // covers ✕ but NOT Cmd+Q. Result: closing the app with Cmd+Q skipped
+    // engine.shutdown() entirely, so the root helper never got an Action::
+    // Shutdown request and never killed its child python. Each restart
+    // accumulated another orphan helper + python + tunnel until the user hit
+    // `already running with PID N` and had to sudo-kill manually.
+    //
+    // block_on synchronously drives shutdown to completion before letting
+    // Tauri proceed with exit, so helper actually gets to write a final state
+    // and tear down its child python before we lose IPC with it.
+    app.run(move |_app_handle, event| {
+        let trigger = match &event {
+            RunEvent::ExitRequested { .. } => Some("ExitRequested (Cmd+Q / system)"),
+            RunEvent::WindowEvent {
+                event: WindowEvent::CloseRequested { .. },
+                ..
+            } => Some("WindowEvent::CloseRequested (window ✕)"),
+            _ => None,
+        };
+        if let Some(reason) = trigger {
+            tracing::info!(reason, "shutting down engine before exit");
+            let engine = engine_for_shutdown.clone();
+            tauri::async_runtime::block_on(async move {
+                if let Err(err) = engine.shutdown().await {
+                    tracing::warn!(?err, "engine shutdown failed");
+                }
+            });
+        }
+    });
 }
