@@ -1,9 +1,10 @@
 //! First-launch runtime installer.
 //!
-//! Copies the bundled Python runtime (main.py + init/ + run.py + pyproject.toml
-//! + deps) from the read-only app bundle / repo into the writable user data
-//! directory, where `ensure_deps` then creates the `.venv` and installs
-//! `pymobiledevice3==5.0.4`.
+//! Copies the bundled Python runtime — `main.py`, `init/`, `run.py`,
+//! `pyproject.toml`, deps, etc. — from the read-only app bundle (or the
+//! repo in dev mode) into the writable user data directory, where
+//! [`crate::env_setup::ensure_deps`] then creates the `.venv` and
+//! installs `pymobiledevice3==5.0.4`.
 //!
 //! Why this exists: before vendoring, Cyber Runner relied on the developer
 //! manually placing a copy of the legacy `run/` repo at the user runtime path.
