@@ -53,10 +53,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> io::Result<()> {
 
         // Skip vcs, caches, virtualenvs — these should never be in the bundle
         // but guard anyway so a sloppy dev rebuild can't poison user data.
-        if name_str.starts_with('.')
-            || name_str == "__pycache__"
-            || name_str == "node_modules"
-        {
+        if name_str.starts_with('.') || name_str == "__pycache__" || name_str == "node_modules" {
             continue;
         }
 
@@ -100,7 +97,10 @@ mod tests {
         let copied = ensure_runtime_files(&bundle, &user).unwrap();
         assert!(!copied);
         let preserved = fs::read(user.join("main.py")).unwrap();
-        assert_eq!(preserved, b"user version", "user file must not be overwritten");
+        assert_eq!(
+            preserved, b"user version",
+            "user file must not be overwritten"
+        );
     }
 
     #[test]
@@ -119,8 +119,14 @@ mod tests {
         let copied = ensure_runtime_files(&bundle, &user).unwrap();
         assert!(copied);
         assert_eq!(fs::read(user.join("main.py")).unwrap(), b"hello");
-        assert_eq!(fs::read(user.join("init").join("init.py")).unwrap(), b"init code");
+        assert_eq!(
+            fs::read(user.join("init").join("init.py")).unwrap(),
+            b"init code"
+        );
         assert_eq!(fs::read(user.join("pyproject.toml")).unwrap(), b"[project]");
-        assert!(!user.join("__pycache__").exists(), "__pycache__ must be skipped");
+        assert!(
+            !user.join("__pycache__").exists(),
+            "__pycache__ must be skipped"
+        );
     }
 }

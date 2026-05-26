@@ -19,8 +19,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use cyber_runner_engine::{
-    ensure_runtime_files, legacy_helper_available, BundledHelperEngine, Engine,
-    LegacyHelperEngine, RealEngine,
+    ensure_runtime_files, legacy_helper_available, BundledHelperEngine, Engine, LegacyHelperEngine,
+    RealEngine,
 };
 use state::AppState;
 use tauri::{Emitter, Manager, WindowEvent};
