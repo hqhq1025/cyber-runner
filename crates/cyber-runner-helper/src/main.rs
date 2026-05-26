@@ -6,13 +6,18 @@
 //! 2. 解析为 [`cyber_runner_core::Request`]，分派给 [`cyber_runner_engine::RealEngine`]
 //! 3. 把结果写回 `<base>/commands/response-<id>.json`
 //! 4. 收到 SIGTERM / SIGINT 时干净退出（杀掉自己 spawn 的 python 子进程）
+//! 5. **Watchdog**：如果传了 host PID（第 2 个 argv），每秒检查 Tauri host 是否还活；
+//!    host 死了 → 自杀（trigger 同一个 shutdown 清理路径）。这是 Tauri 2 macOS
+//!    Cmd+Q 不 fire `RunEvent::ExitRequested` 的标准 workaround（GitHub
+//!    issues #9198 / #13778 / #12978，全部 open 未修）。
 //!
 //! 用法：
 //! ```text
-//! cyber-runner-helper <BASE_DIR>
+//! cyber-runner-helper <BASE_DIR> [HOST_PID]
 //! # 例：
-//! cyber-runner-helper "/Users/me/Library/Application Support/CyberRunner"
+//! cyber-runner-helper "/Users/me/Library/Application Support/CyberRunner" 31415
 //! ```
+//! HOST_PID 可选 —— 不传就只靠 signal + Action::Shutdown，没有 watchdog 兜底。
 //!
 //! BASE_DIR 下的目录结构：
 //! ```text
@@ -46,11 +51,11 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
 async fn main() -> ExitCode {
     init_tracing();
 
-    let base = match parse_args() {
-        Ok(b) => b,
+    let (base, host_pid) = match parse_args() {
+        Ok(args) => args,
         Err(msg) => {
             eprintln!("cyber-runner-helper: {msg}");
-            eprintln!("usage: cyber-runner-helper <BASE_DIR>");
+            eprintln!("usage: cyber-runner-helper <BASE_DIR> [HOST_PID]");
             return ExitCode::from(2);
         }
     };
@@ -106,6 +111,18 @@ async fn main() -> ExitCode {
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<&'static str>(2);
     spawn_signal_listener(shutdown_tx.clone());
 
+    // Watchdog: 如果 host 传了自己的 PID 进来，监测它，死了就触发 shutdown。
+    // 这是 Tauri 2 macOS 上 Cmd+Q / Dock Quit 不 fire `RunEvent::ExitRequested`
+    // 的兜底（issues #9198 / #13778 / #12978）。即使 Tauri host 通过任何路径
+    // 死掉（Cmd+Q、Activity Monitor kill、崩溃、系统重启），helper 都能在 1
+    // 秒内检测到 + 跑现有 shutdown 清理 + 自杀。不依赖任何 OS 事件 / IPC，
+    // 是经典 daemon 设计。
+    if let Some(host_pid) = host_pid {
+        append_helper_log(&helper_log, &format!("watchdog on host pid={host_pid}")).await;
+        info!(host_pid, "watchdog: monitoring host process");
+        spawn_host_watchdog(host_pid, shutdown_tx.clone());
+    }
+
     let mut interval = tokio::time::interval(POLL_INTERVAL);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
@@ -156,15 +173,41 @@ async fn main() -> ExitCode {
     exit_code
 }
 
-fn parse_args() -> Result<PathBuf, String> {
+fn parse_args() -> Result<(PathBuf, Option<u32>), String> {
     let mut args = env::args().skip(1);
     let base = args
         .next()
         .ok_or_else(|| "missing BASE_DIR argument".to_string())?;
+    let host_pid = match args.next() {
+        Some(s) => Some(
+            s.parse::<u32>()
+                .map_err(|e| format!("invalid HOST_PID `{s}`: {e}"))?,
+        ),
+        None => None,
+    };
     if args.next().is_some() {
         return Err("too many arguments".into());
     }
-    Ok(PathBuf::from(base))
+    Ok((PathBuf::from(base), host_pid))
+}
+
+/// Poll `process_alive(host_pid)` every second; when it returns false, send
+/// a synthetic shutdown signal to the main loop so it falls through to the
+/// regular cleanup hook (stop python + cleanup tunnels + remove pid files).
+///
+/// Why not just exit immediately: the existing cleanup needs to run on the
+/// main task with engine access, not from a watchdog task. Routing through
+/// `shutdown_tx` keeps cleanup in one place.
+fn spawn_host_watchdog(host_pid: u32, tx: mpsc::Sender<&'static str>) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            if !cyber_runner_engine::python_runner::process_alive(host_pid) {
+                let _ = tx.send("host died (watchdog)").await;
+                return;
+            }
+        }
+    });
 }
 
 fn init_tracing() {

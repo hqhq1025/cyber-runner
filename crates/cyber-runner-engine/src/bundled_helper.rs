@@ -123,11 +123,16 @@ impl BundledHelperEngine {
         let base = self.base.to_string_lossy().to_string();
         let stdout_log = self.base.join("helper.stdout.log");
         let stdout_log = stdout_log.to_string_lossy().to_string();
+        // Pass our PID as the 2nd argv so helper's watchdog can self-exit if
+        // we die. Required because Tauri 2 doesn't fire ExitRequested on
+        // macOS Cmd+Q (upstream issues #9198 / #13778 / #12978).
+        let host_pid = std::process::id().to_string();
 
         let shell_cmd = format!(
-            "/bin/mkdir -p {base_q} && ( {helper_q} {base_q} </dev/null >>{log_q} 2>&1 & )",
+            "/bin/mkdir -p {base_q} && ( {helper_q} {base_q} {host_pid_q} </dev/null >>{log_q} 2>&1 & )",
             helper_q = sh_quote(&helper),
             base_q = sh_quote(&base),
+            host_pid_q = sh_quote(&host_pid),
             log_q = sh_quote(&stdout_log),
         );
         // AppleScript 双引号字符串内：\ 和 " 要转义
@@ -183,6 +188,7 @@ impl BundledHelperEngine {
 
         tokio::process::Command::new(&self.helper_path)
             .arg(&self.base)
+            .arg(std::process::id().to_string())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(stdout_file))
             .stderr(std::process::Stdio::from(stderr_file))
@@ -211,6 +217,7 @@ impl BundledHelperEngine {
 
         tokio::process::Command::new(&self.helper_path)
             .arg(&self.base)
+            .arg(std::process::id().to_string())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::from(stdout_file))
             .stderr(std::process::Stdio::from(stderr_file))
