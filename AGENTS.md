@@ -169,6 +169,34 @@ push 到 main 或开 PR 都触发。fail 立刻看 `gh run view <id> --log-faile
    `( cmd </dev/null >>log 2>&1 & )` 模式（subshell + 重定向 stdin/out）
    绕开。详细注释看 `bundled_helper.rs::spawn_helper_platform` macOS 分支。
 
+5. **pymobiledevice3 严格 pin v5.0.4**：v5 → v9 之间 API 完全变了
+   （`DvtSecureSocketProxyService` 被删、`LocationSimulation.set()` 改 async、
+   `DvtProvider` 替代旧 socket）。`runtime/run.py` 用的是 v5 surface。
+   `runtime/pyproject.toml` 必须保持 `pymobiledevice3==5.0.4`，**不要改成
+   `>=5.0.4`**（这正是 issue #1 撞墙的原因 —— Windows 同学拿到的 v9.14.2
+   完全跑不了）。CI 的 `runtime-smoke` job 会跑 `inspect.iscoroutinefunction(LocationSimulation.set)`
+   断言 sync，被升级了就立刻挂。
+
+6. **Runtime 是 vendored 进 repo 的**（`runtime/`，MPL-2.0 自
+   BiancoChiu/iOSRealRun-cli-18）。Cyber Runner 启动时 `lib.rs::run` 调
+   `ensure_runtime_files(bundle_runtime, user_data_runtime)`，只在用户那边
+   `main.py` 缺失时 cp。**不会覆盖用户改过的 `config.yaml` / `HNroute.txt`**。
+   如果用户报 "改了 config 但 app 不读" → 让他确认改的是 user data dir 那份
+   （`~/Library/.../CyberRunner/runtime/`），不是 repo 里的 `runtime/`。
+
+7. **Tauri 2 platform-config 用 JSON merge patch (RFC 7396)**：
+   `tauri.{macos,windows,linux}.conf.json` 跟 base 合并时，object 里 `{}`
+   是 **deep merge no-op**，不是替换；要删 base 里某个 key 必须用 `null`。
+   例：之前 windows.conf 写 `"resources": {}` 想清空 helper resource，
+   实际等于不动，CI 仍报 "resource path doesn't exist"；改成 `"resources": null`
+   或者显式列新 map 才行。
+
+8. **Bundle resources 的相对路径会被 `_up_` mangled**：tauri-bundler 看到
+   `../target/release/cyber-runner-helper` 用 string 语法会复制到
+   `Contents/Resources/_up_/target/release/cyber-runner-helper`（保留嵌套）。
+   要平铺到 `Contents/Resources/cyber-runner-helper` 必须用 map 语法
+   `{"../source/path": "dest-name"}`。同理 `runtime/` 也用 map。
+
 ---
 
 ## 跟项目 owner 协作时

@@ -23,6 +23,9 @@ cyber-runner/
 │   │                           # BundledHelperEngine + LegacyHelperEngine
 │   ├── cyber-runner-helper/    # 独立 root binary，监听 commands/ 文件 IPC
 │   └── cyber-runner-platform/  # macOS / Windows 提权抽象
+├── runtime/                    # Python GPS 引擎（main.py + init/ + run.py
+│                               # 等），vendored 自 BiancoChiu/iOSRealRun-cli-18
+│                               # (MPL-2.0)，pymobiledevice3 严格 pin 5.0.4
 ├── src-tauri/                  # Tauri host（productName "Cyber Runner",
 │                               # bundle id dev.haoqing.cyber-runner）
 ├── src/                        # Svelte 5 前端
@@ -40,15 +43,22 @@ App 运行时数据（日志、PID、Python venv）落在：
 
 - **Rust** stable（≥ 1.79）
 - **Node** 22+（CI 用 22，更老版本可能能跑但没测）
-- **Python** 3.11+（runtime 里嵌入的引擎需要；legacy run 实测到 3.13）
+- **Python** 3.12+（runtime/ 锁定 3.12；3.13 实测也 OK）
+- **`uv`** 管 Python venv（推荐）—— 第一次启动时引擎自动 `uv sync`
+  把 `runtime/.venv` 装好，**严格按 `pyproject.toml` 拉 `pymobiledevice3==5.0.4`**
+  （v5 → v9 API 完全不兼容，不能让 pip 自由升级，详情见 issue #1）
 
 分平台还要：
 
 - **macOS** — Xcode Command Line Tools（Rust 用的 linker）
 - **Windows** — 装 [iTunes](https://www.apple.com/itunes/)（提供 Apple Mobile
   Device Service，`pymobiledevice3` 通过 usbmux 跟它对话）
-- **通用** — 推荐装 `uv` 管 Python venv。第一次启动时如果 `PATH` 里有 `uv`，
-  引擎会自动装好依赖。
+
+> **本项目自带 Python runtime**。`runtime/` 目录里的 main.py / init/ / run.py
+> 等是 vendored 自 [BiancoChiu/iOSRealRun-cli-18](https://github.com/BiancoChiu/iOSRealRun-cli-18)
+> （MPL-2.0），不要再去另装那个 repo —— `git clone cyber-runner` 拿到的就是
+> 完整可跑的代码。第一次启动 app 会把 `runtime/` 复制到 OS 标准 data 目录
+> 然后跑 `uv sync` 起 venv。
 
 ## 手机端配置（iPhone / iPad）
 
