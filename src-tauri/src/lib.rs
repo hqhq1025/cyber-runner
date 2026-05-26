@@ -19,7 +19,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use cyber_runner_engine::{
-    legacy_helper_available, BundledHelperEngine, Engine, LegacyHelperEngine, RealEngine,
+    ensure_runtime_files, legacy_helper_available, BundledHelperEngine, Engine,
+    LegacyHelperEngine, RealEngine,
 };
 use state::AppState;
 use tauri::{Emitter, Manager, WindowEvent};
@@ -42,6 +43,40 @@ fn default_base_dir() -> PathBuf {
 
 fn default_runtime_dir() -> PathBuf {
     default_base_dir().join(APP_RUNTIME_LEAF)
+}
+
+/// 找 bundled Python runtime 目录（含 main.py 等）。Layout 跟
+/// [`find_helper_binary`] 一样，按"app 同目录 → mac .app Resources/" 顺序查。
+///
+/// - dev：`<repo>/runtime/`，相对于 `target/debug/cyber-runner-app` 是 `../../runtime/`
+/// - macOS release：`.app/Contents/Resources/runtime/`
+/// - Windows NSIS/MSI release：与 cyber-runner-app.exe 同目录 `runtime/`
+fn find_bundled_runtime() -> Option<PathBuf> {
+    let cur = std::env::current_exe().ok()?;
+    let dir = cur.parent()?;
+
+    // dev 模式：target/debug/cyber-runner-app → repo/runtime/
+    // dir = target/debug/, dir.parent() = target/, dir.parent().parent() = repo/
+    if let Some(repo_root) = dir.parent().and_then(|p| p.parent()) {
+        let candidate = repo_root.join("runtime");
+        if candidate.join("main.py").exists() {
+            return Some(candidate);
+        }
+    }
+
+    // Same dir (Windows release bundle, or arbitrary "binary + runtime/" install layouts)
+    let sibling = dir.join("runtime");
+    if sibling.join("main.py").exists() {
+        return Some(sibling);
+    }
+
+    // macOS .app release: Contents/MacOS/cyber-runner-app → Contents/Resources/runtime
+    let mac_bundle = dir.parent()?.join("Resources").join("runtime");
+    if mac_bundle.join("main.py").exists() {
+        return Some(mac_bundle);
+    }
+
+    None
 }
 
 /// 找 cyber-runner-helper 二进制位置。
@@ -111,6 +146,28 @@ pub fn run() {
     if let Err(err) = std::fs::create_dir_all(&commands_dir) {
         tracing::warn!(?err, ?commands_dir, "could not create commands dir");
     }
+
+    // First-launch: copy bundled Python runtime (main.py etc.) to user data dir
+    // so the engine has something to spawn. No-op on subsequent launches; user
+    // edits to config.yaml / HNroute.txt are preserved.
+    let user_runtime = default_runtime_dir();
+    if let Some(bundled) = find_bundled_runtime() {
+        match ensure_runtime_files(&bundled, &user_runtime) {
+            Ok(true) => tracing::info!(
+                from = ?bundled,
+                to = ?user_runtime,
+                "copied bundled Python runtime to user data dir (first launch)"
+            ),
+            Ok(false) => tracing::debug!(?user_runtime, "user runtime already prepared"),
+            Err(err) => tracing::warn!(?err, ?bundled, ?user_runtime, "runtime copy failed"),
+        }
+    } else {
+        tracing::warn!(
+            "no bundled runtime found; engine will fail unless user has manually \
+             populated {user_runtime:?} with main.py and friends"
+        );
+    }
+
     let engine = pick_engine(&base_dir);
     let app_state = AppState::new_real(engine.clone(), base_dir);
 

@@ -1,0 +1,14 @@
+[project]
+name = "cyber-runner-runtime"
+version = "0.1.0"
+description = "Python runtime for Cyber Runner — pymobiledevice3-based iOS GPS simulator. Vendored from BiancoChiu/iOSRealRun-cli-18 (MPL-2.0)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "geopy>=2.4.1",
+    # Strict pin: v5.x and v9.x have completely different APIs (DvtSecureSocketProxyService
+    # → DvtProvider; LocationSimulation.set() became async). run.py uses the v5 surface;
+    # bumping major versions WILL break it. Only change after migrating run.py too.
+    "pymobiledevice3==5.0.4",
+    "pyyaml>=6.0.3",
+]
