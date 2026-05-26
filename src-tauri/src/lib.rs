@@ -41,6 +41,28 @@ fn default_base_dir() -> PathBuf {
 }
 
 fn default_runtime_dir() -> PathBuf {
+    // 环境变量覆盖：CYBER_RUNNER_RUNTIME_DIR 指向自定义 runtime 目录
+    if let Ok(dir) = std::env::var("CYBER_RUNNER_RUNTIME_DIR") {
+        return PathBuf::from(dir);
+    }
+    // exe 同级的 runtime/（release 打包后 exe 和 runtime 在同一目录）
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let sibling = parent.join(APP_RUNTIME_LEAF);
+            if sibling.exists() {
+                return sibling;
+            }
+        }
+    }
+    // 项目根目录的 runtime/（CARGO_MANIFEST_DIR 是 src-tauri/，往上一层）
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if let Some(project_root) = manifest_dir.parent() {
+        let project_runtime = project_root.join(APP_RUNTIME_LEAF);
+        if project_runtime.exists() {
+            return project_runtime;
+        }
+    }
+    // 默认：%LOCALAPPDATA%\CyberRunner\runtime
     default_base_dir().join(APP_RUNTIME_LEAF)
 }
 
@@ -72,11 +94,12 @@ fn find_helper_binary() -> Option<PathBuf> {
 }
 
 /// 选最合适的引擎后端。
-fn pick_engine(base_dir: &PathBuf) -> Arc<dyn Engine> {
+fn pick_engine(base_dir: &PathBuf, runtime_dir: PathBuf) -> Arc<dyn Engine> {
     if let Some(helper) = find_helper_binary() {
         tracing::info!(
             ?helper,
             ?base_dir,
+            ?runtime_dir,
             "using BundledHelperEngine (own root helper)"
         );
         return Arc::new(BundledHelperEngine::new(helper, base_dir.clone())) as Arc<dyn Engine>;
@@ -88,12 +111,11 @@ fn pick_engine(base_dir: &PathBuf) -> Arc<dyn Engine> {
         );
         return Arc::new(LegacyHelperEngine::new()) as Arc<dyn Engine>;
     }
-    let runtime = default_runtime_dir();
     tracing::info!(
-        ?runtime,
+        ?runtime_dir,
         "using RealEngine (direct python spawn, may need root)"
     );
-    Arc::new(RealEngine::new(runtime)) as Arc<dyn Engine>
+    Arc::new(RealEngine::new(runtime_dir)) as Arc<dyn Engine>
 }
 
 pub fn run() {
@@ -111,7 +133,11 @@ pub fn run() {
     if let Err(err) = std::fs::create_dir_all(&commands_dir) {
         tracing::warn!(?err, ?commands_dir, "could not create commands dir");
     }
-    let engine = pick_engine(&base_dir);
+    let runtime_dir = default_runtime_dir();
+    if let Err(err) = std::fs::create_dir_all(&runtime_dir) {
+        tracing::warn!(?err, ?runtime_dir, "could not create runtime dir");
+    }
+    let engine = pick_engine(&base_dir, runtime_dir);
     let app_state = AppState::new_real(engine.clone(), base_dir);
 
     // 给 WindowEvent::CloseRequested 留一份 engine 句柄，关 App 时调 shutdown()

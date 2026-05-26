@@ -37,6 +37,17 @@ pub fn find_uv() -> Option<PathBuf> {
 /// Ensure deps installed in `runtime_dir/.venv`. Emits each output line as
 /// `Event::Log`. Returns Ok on success, Err with stderr-ish output otherwise.
 pub async fn ensure_deps(runtime_dir: &Path, events: &Sender<Event>) -> Result<(), EngineError> {
+    // Ensure runtime_dir exists — Windows `current_dir` gives os error 267 if missing.
+    if !runtime_dir.exists() {
+        tokio::fs::create_dir_all(runtime_dir)
+            .await
+            .map_err(EngineError::Io)?;
+        let _ = events.send(Event::Log(format!(
+            "created runtime dir at {}",
+            runtime_dir.display()
+        )));
+    }
+
     // Fast path: if .venv/bin/python already exists, assume deps are installed
     // and skip the uv/pip dance. Critical when runtime_dir points at an
     // already-prepared venv (Stage 4 bundled runtime, or — during dev — a
