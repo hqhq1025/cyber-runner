@@ -2,7 +2,6 @@
   import { onMount } from "svelte";
   import { app } from "./lib/store.svelte";
   import Header from "./components/Header.svelte";
-  import MapCard from "./components/MapCard.svelte";
   import RunPanel from "./components/RunPanel.svelte";
   import PlanPanel from "./components/PlanPanel.svelte";
   import LogBar from "./components/LogBar.svelte";
@@ -38,10 +37,9 @@
       </div>
     {/if}
     <main class="grid">
-      <MapCard onimport={() => importDlg?.open()} onmanage={() => routesDlg?.open()} />
+      <RunPanel />
       <aside class="side">
-        <RunPanel />
-        <PlanPanel />
+        <PlanPanel onimport={() => importDlg?.open()} onmanage={() => routesDlg?.open()} />
       </aside>
     </main>
     <LogBar />
@@ -65,7 +63,7 @@
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 372px;
+    grid-template-columns: minmax(0, 1fr) 380px;
     gap: 14px;
     padding: 14px;
   }

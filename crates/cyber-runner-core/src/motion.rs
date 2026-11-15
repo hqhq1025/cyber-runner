@@ -7,11 +7,22 @@
 //! travelled*, and distance is integrated from the real elapsed time, so the
 //! pace is exact no matter how often (or how irregularly) we tick.
 //!
-//! Human-like variation (all smooth and deterministic for a given seed):
+//! Every run gets a fresh random seed, so no two runs produce the same
+//! trace. Human-like variation (smooth, deterministic for a given seed):
+//! - per-run pace factor (± `run_pace_jitter`) and start offset along the
+//!   track (0..`start_jitter_m`)
 //! - per-lap pace factor (± `lap_pace_jitter`)
 //! - slow in-lap speed wobble (± `speed_wobble`)
-//! - lateral drift across the track (≤ `lateral_jitter_m`), continuous
-//!   across lap boundaries so there is never a jump.
+//! - sideways position = per-run lane (± `lane_m`) + slow drift
+//!   (± `lateral_jitter_m`) + fine GPS-like wobble (± `fine_jitter_m`),
+//!   all continuous across lap boundaries so there is never a jump.
+//!
+//! Distance accuracy: sideways movement makes the emitted path slightly
+//! longer or shorter than the drawn line (inner/outer lane on a bend). We
+//! integrate along the line at `v / stretch`, where `stretch` is the local
+//! ratio of emitted path to line length, so the *emitted* trace — what the
+//! campus app measures — moves at exactly the requested speed. The reported
+//! distance is the length of the emitted trace itself.
 
 use serde::{Deserialize, Serialize};
 
@@ -21,43 +32,67 @@ use crate::track::Track;
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Variation {
+    /// Fractional per-run pace change, e.g. 0.015 = ±1.5 %.
+    pub run_pace_jitter: f64,
     /// Fractional per-lap pace change, e.g. 0.04 = ±4 %.
     pub lap_pace_jitter: f64,
     /// Fractional smooth in-lap speed wobble.
     pub speed_wobble: f64,
-    /// Max sideways drift from the drawn line, meters.
+    /// Per-run constant sideways offset ("which lane"), ± meters.
+    pub lane_m: f64,
+    /// Slow sideways drift from the lane, ± meters.
     pub lateral_jitter_m: f64,
+    /// Fine, faster sideways wobble (GPS-like), ± meters.
+    pub fine_jitter_m: f64,
+    /// Random start offset along the track, 0..meters.
+    pub start_jitter_m: f64,
 }
 
 impl Default for Variation {
     fn default() -> Self {
         Self {
+            run_pace_jitter: 0.015,
             lap_pace_jitter: 0.04,
             speed_wobble: 0.03,
+            lane_m: 1.5,
             lateral_jitter_m: 2.0,
+            fine_jitter_m: 0.6,
+            start_jitter_m: 8.0,
         }
     }
 }
 
 impl Variation {
     pub const NONE: Variation = Variation {
+        run_pace_jitter: 0.0,
         lap_pace_jitter: 0.0,
         speed_wobble: 0.0,
+        lane_m: 0.0,
         lateral_jitter_m: 0.0,
+        fine_jitter_m: 0.0,
+        start_jitter_m: 0.0,
     };
 
     fn clamped(self) -> Self {
+        let c = |v: f64, hi: f64| if v.is_finite() { v.clamp(0.0, hi) } else { 0.0 };
         Self {
-            lap_pace_jitter: self.lap_pace_jitter.clamp(0.0, 0.2),
-            speed_wobble: self.speed_wobble.clamp(0.0, 0.2),
-            lateral_jitter_m: self.lateral_jitter_m.clamp(0.0, 10.0),
+            run_pace_jitter: c(self.run_pace_jitter, 0.1),
+            lap_pace_jitter: c(self.lap_pace_jitter, 0.2),
+            speed_wobble: c(self.speed_wobble, 0.2),
+            lane_m: c(self.lane_m, 5.0),
+            lateral_jitter_m: c(self.lateral_jitter_m, 10.0),
+            fine_jitter_m: c(self.fine_jitter_m, 3.0),
+            start_jitter_m: c(self.start_jitter_m, 30.0),
         }
     }
 }
 
 /// Speed limits accepted by the engine (m/s).
 pub const MIN_SPEED_MPS: f64 = 0.5;
-pub const MAX_SPEED_MPS: f64 = 10.0;
+/// Hard cap: 3'05"/km. Campus-run apps typically void a run whose pace is
+/// faster than 3'00"/km, so neither the chosen speed nor the realism
+/// variation (per-run, per-lap, wobble) may ever exceed this.
+pub const MAX_SPEED_MPS: f64 = 1000.0 / 185.0;
 
 pub fn clamp_speed(v: f64) -> f64 {
     if v.is_finite() {
@@ -71,13 +106,13 @@ pub fn clamp_speed(v: f64) -> f64 {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Fix {
     pub position: LatLng,
-    /// Total distance since start, meters.
+    /// Total distance of the emitted trace since start, meters.
     pub distance_m: f64,
     /// Completed laps.
     pub laps: u32,
     /// Progress in the current lap, 0..1.
     pub lap_progress: f64,
-    /// Instantaneous speed, m/s.
+    /// Instantaneous speed of the emitted trace, m/s.
     pub speed_mps: f64,
 }
 
@@ -87,23 +122,35 @@ pub struct Motion {
     base_speed: f64,
     variation: Variation,
     seed: u64,
-    distance: f64,
+    /// Start position along the line.
+    s0: f64,
+    /// Current position along the line.
+    s: f64,
+    /// Length of the emitted trace so far.
+    path: f64,
 }
 
 /// Spacing of the noise control points along the run.
 const LATERAL_NOISE_SPACING_M: f64 = 45.0;
+const FINE_NOISE_SPACING_M: f64 = 11.0;
 const SPEED_NOISE_SPACING_M: f64 = 160.0;
 /// Half-length of the chord used to orient lateral offsets.
 const NORMAL_CHORD_M: f64 = 4.0;
+/// Half-width of the finite difference used to measure path stretch.
+const STRETCH_H_M: f64 = 0.5;
 
 impl Motion {
     pub fn new(track: Track, speed_mps: f64, variation: Variation, seed: u64) -> Self {
+        let variation = variation.clamped();
+        let s0 = variation.start_jitter_m * (unit(seed ^ 0x57A7, 0) + 1.0) * 0.5;
         Self {
             track,
             base_speed: clamp_speed(speed_mps),
-            variation: variation.clamped(),
+            variation,
             seed,
-            distance: 0.0,
+            s0,
+            s: s0,
+            path: 0.0,
         }
     }
 
@@ -120,26 +167,84 @@ impl Motion {
         self.base_speed = clamp_speed(speed_mps);
     }
 
+    /// Takes effect immediately. The sideways offset may shift by a few
+    /// meters once; that step is not counted as distance.
     pub fn set_variation(&mut self, v: Variation) {
         self.variation = v.clamped();
     }
 
+    /// Length of the emitted trace so far, meters.
     pub fn distance_m(&self) -> f64 {
-        self.distance
+        self.path
     }
 
-    fn lap_index(&self, distance: f64) -> u32 {
-        (distance / self.track.lap_length_m()).floor().max(0.0) as u32
+    fn lap_index(&self, s: f64) -> u32 {
+        ((s - self.s0) / self.track.lap_length_m()).floor().max(0.0) as u32
     }
 
-    /// Speed at a given distance (before integrating).
-    pub fn speed_at(&self, distance: f64) -> f64 {
-        let lap = self.lap_index(distance) as u64;
-        let lap_factor = 1.0 + self.variation.lap_pace_jitter * unit(self.seed ^ 0x1A9, lap);
-        let wobble = 1.0
-            + self.variation.speed_wobble
-                * value_noise(self.seed ^ 0x5EED, distance / SPEED_NOISE_SPACING_M);
-        clamp_speed(self.base_speed * lap_factor * wobble)
+    /// Speed of the emitted trace at line position `s`.
+    fn speed_at(&self, s: f64) -> f64 {
+        let v = &self.variation;
+        let run = 1.0 + v.run_pace_jitter * unit(self.seed ^ 0x2B1, 0);
+        let lap = 1.0 + v.lap_pace_jitter * unit(self.seed ^ 0x1A9, self.lap_index(s) as u64);
+        let wobble =
+            1.0 + v.speed_wobble * value_noise(self.seed ^ 0x5EED, s / SPEED_NOISE_SPACING_M);
+        clamp_speed(self.base_speed * run * lap * wobble)
+    }
+
+    /// Sideways offset from the line at `s`, meters.
+    fn offset_at(&self, s: f64) -> f64 {
+        let v = &self.variation;
+        v.lane_m * unit(self.seed ^ 0x1A4E, 0)
+            + v.lateral_jitter_m * value_noise(self.seed ^ 0x1A7E, s / LATERAL_NOISE_SPACING_M)
+            + v.fine_jitter_m * value_noise(self.seed ^ 0xF1E, s / FINE_NOISE_SPACING_M)
+    }
+
+    /// Emitted position at line position `s`, local meters.
+    fn xy_at(&self, s: f64) -> (f64, f64) {
+        let p = self.track.at(s);
+        let off = self.offset_at(s);
+        if off == 0.0 {
+            return (p.x, p.y);
+        }
+        // Offset along the normal of a short chord rather than of the
+        // current segment: the segment normal flips instantly at a corner,
+        // which would make the position jump sideways.
+        let (a, b) = (
+            self.track.at(s - NORMAL_CHORD_M),
+            self.track.at(s + NORMAL_CHORD_M),
+        );
+        let (cx, cy) = (b.x - a.x, b.y - a.y);
+        let n = (cx * cx + cy * cy).sqrt();
+        let (tx, ty) = if n > 1e-6 {
+            (cx / n, cy / n)
+        } else {
+            (p.tx, p.ty)
+        };
+        (p.x - ty * off, p.y + tx * off)
+    }
+
+    /// Emitted path length per meter of line around `s`.
+    fn stretch_at(&self, s: f64) -> f64 {
+        let a = self.xy_at(s - STRETCH_H_M);
+        let b = self.xy_at(s + STRETCH_H_M);
+        let d = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt() / (2.0 * STRETCH_H_M);
+        d.clamp(0.5, 2.0)
+    }
+
+    /// Line speed (ds/dt) at `s`.
+    fn line_speed_at(&self, s: f64) -> f64 {
+        let v = self.speed_at(s);
+        if self.offset_is_zero() {
+            v
+        } else {
+            v / self.stretch_at(s)
+        }
+    }
+
+    fn offset_is_zero(&self) -> bool {
+        let v = &self.variation;
+        v.lane_m == 0.0 && v.lateral_jitter_m == 0.0 && v.fine_jitter_m == 0.0
     }
 
     /// Advance by `dt` seconds of wall time and return the new fix.
@@ -150,40 +255,31 @@ impl Motion {
             0.0
         };
         // Midpoint integration: smooth speed profile, negligible error.
-        let v0 = self.speed_at(self.distance);
-        let v_mid = self.speed_at(self.distance + v0 * dt * 0.5);
-        self.distance += v_mid * dt;
+        let v0 = self.line_speed_at(self.s);
+        let s_mid = self.s + v0 * dt * 0.5;
+        let ds = self.line_speed_at(s_mid) * dt;
+        // Arc length of the emitted curve (not the chord, which would cut
+        // corners and depend on the tick size).
+        self.path += if self.offset_is_zero() {
+            ds
+        } else {
+            ds * self.stretch_at(self.s + ds * 0.5)
+        };
+        self.s += ds;
         self.fix()
     }
 
-    /// The fix at the current distance.
+    /// The fix at the current position.
     pub fn fix(&self) -> Fix {
-        let d = self.distance;
-        let p = self.track.at(d);
-        let off = self.variation.lateral_jitter_m
-            * value_noise(self.seed ^ 0x1A7E, d / LATERAL_NOISE_SPACING_M);
-        // Offset along the normal of a short chord rather than of the
-        // current segment: the segment normal flips instantly at a corner,
-        // which would make the position jump sideways.
-        let (a, b) = (
-            self.track.at(d - NORMAL_CHORD_M),
-            self.track.at(d + NORMAL_CHORD_M),
-        );
-        let (cx, cy) = (b.x - a.x, b.y - a.y);
-        let n = (cx * cx + cy * cy).sqrt();
-        let (tx, ty) = if n > 1e-6 {
-            (cx / n, cy / n)
-        } else {
-            (p.tx, p.ty)
-        };
-        let (x, y) = (p.x - ty * off, p.y + tx * off);
+        let s = self.s;
+        let (x, y) = self.xy_at(s);
         let lap_len = self.track.lap_length_m();
         Fix {
             position: self.track.to_latlng(x, y),
-            distance_m: d,
-            laps: self.lap_index(d),
-            lap_progress: (d.rem_euclid(lap_len) / lap_len).clamp(0.0, 1.0),
-            speed_mps: self.speed_at(d),
+            distance_m: self.path,
+            laps: self.lap_index(s),
+            lap_progress: ((s - self.s0).rem_euclid(lap_len) / lap_len).clamp(0.0, 1.0),
+            speed_mps: self.speed_at(s),
         }
     }
 }
@@ -258,19 +354,26 @@ mod tests {
     #[test]
     fn variation_is_bounded_and_continuous() {
         let v = Variation::default();
-        let mut m = Motion::new(track(), 5.0, v, 7);
+        let mut m = Motion::new(track(), 4.5, v, 7);
         let mut prev = m.fix();
         let mut max_step = 0.0f64;
         for _ in 0..20_000 {
             let f = m.advance(0.25);
             let step = haversine_m(prev.position, f.position);
             max_step = max_step.max(step);
-            let lo = 5.0 * (1.0 - v.lap_pace_jitter) * (1.0 - v.speed_wobble);
-            let hi = 5.0 * (1.0 + v.lap_pace_jitter) * (1.0 + v.speed_wobble);
+            let lo = 4.5
+                * (1.0 - v.run_pace_jitter)
+                * (1.0 - v.lap_pace_jitter)
+                * (1.0 - v.speed_wobble);
+            let hi = (4.5
+                * (1.0 + v.run_pace_jitter)
+                * (1.0 + v.lap_pace_jitter)
+                * (1.0 + v.speed_wobble))
+                .min(MAX_SPEED_MPS);
             assert!(f.speed_mps >= lo - 1e-9 && f.speed_mps <= hi + 1e-9);
             prev = f;
         }
-        // 5 m/s * 1.07 * 0.25 s ≈ 1.34 m plus small lateral drift; never a jump.
+        // ≤ 5.4 m/s * 0.25 s ≈ 1.35 m plus small lateral drift; never a jump.
         assert!(max_step < 2.0, "max step {max_step}");
         assert!(m.fix().laps > 10);
     }
@@ -279,14 +382,100 @@ mod tests {
     fn set_speed_is_immediate_and_clamped() {
         let mut m = Motion::new(track(), 3.0, Variation::NONE, 0);
         m.advance(10.0_f64.min(5.0));
-        m.set_speed(6.0);
+        m.set_speed(5.0);
         let d0 = m.distance_m();
         m.advance(1.0);
-        assert!((m.distance_m() - d0 - 6.0).abs() < 1e-9);
+        assert!((m.distance_m() - d0 - 5.0).abs() < 1e-9);
         m.set_speed(100.0);
         assert_eq!(m.base_speed(), MAX_SPEED_MPS);
         m.set_speed(f64::NAN);
         assert_eq!(m.base_speed(), MIN_SPEED_MPS);
+    }
+
+    /// Sideways movement only (no speed variation): the emitted trace must
+    /// still move at exactly the requested speed.
+    const PATH_ONLY: Variation = Variation {
+        run_pace_jitter: 0.0,
+        lap_pace_jitter: 0.0,
+        speed_wobble: 0.0,
+        lane_m: 2.5,
+        lateral_jitter_m: 3.5,
+        fine_jitter_m: 1.0,
+        start_jitter_m: 10.0,
+    };
+
+    #[test]
+    fn emitted_trace_speed_is_exact_with_lateral_variation() {
+        let mut m = Motion::new(track(), 3.2, PATH_ONLY, 11);
+        let mut prev = m.fix().position;
+        let (mut measured, mut t) = (0.0, 0.0);
+        while t < 1800.0 {
+            let f = m.advance(0.25);
+            measured += haversine_m(prev, f.position);
+            prev = f.position;
+            t += 0.25;
+        }
+        assert!(
+            (m.distance_m() / t / 3.2 - 1.0).abs() < 1e-3,
+            "{}",
+            m.distance_m() / t
+        );
+        assert!((measured / m.distance_m() - 1.0).abs() < 2e-3);
+    }
+
+    #[test]
+    fn different_seeds_give_different_traces() {
+        let run = |seed| {
+            let mut m = Motion::new(track(), 3.2, Variation::default(), seed);
+            (0..2400)
+                .map(|_| m.advance(0.25).position)
+                .collect::<Vec<_>>()
+        };
+        let (a, b) = (run(1), run(2));
+        let mean_gap = a
+            .iter()
+            .zip(&b)
+            .map(|(p, q)| haversine_m(*p, *q))
+            .sum::<f64>()
+            / a.len() as f64;
+        assert!(
+            mean_gap > 1.0,
+            "traces too similar: mean gap {mean_gap:.2} m"
+        );
+        assert_eq!(run(5), run(5));
+    }
+
+    #[test]
+    fn start_offset_is_small_and_not_counted() {
+        for seed in 0..50 {
+            let m = Motion::new(track(), 3.2, Variation::default(), seed);
+            let f = m.fix();
+            assert_eq!(f.distance_m, 0.0);
+            assert_eq!(f.laps, 0);
+            let start = track().at(0.0);
+            let p = track().frame().to_xy(f.position);
+            let d = ((p.0 - start.x).powi(2) + (p.1 - start.y).powi(2)).sqrt();
+            assert!(d < 8.0 + 4.2, "seed {seed}: start {d:.1} m away");
+        }
+    }
+
+    #[test]
+    fn pace_never_faster_than_cap_even_with_high_variation() {
+        let high = Variation {
+            run_pace_jitter: 0.1,
+            lap_pace_jitter: 0.2,
+            speed_wobble: 0.2,
+            ..Variation::default()
+        };
+        for seed in 0..20 {
+            // 3'15"/km target, the fastest preset.
+            let mut m = Motion::new(track(), 1000.0 / 195.0, high, seed);
+            for _ in 0..4000 {
+                let f = m.advance(0.25);
+                assert!(f.speed_mps <= MAX_SPEED_MPS + 1e-12);
+                assert!(1000.0 / f.speed_mps >= 185.0 - 1e-6);
+            }
+        }
     }
 
     #[test]
@@ -346,10 +535,30 @@ mod measured_pace {
                     .map(|s| app_measured_speed(route, v, Variation::default(), 1800.0, s))
                     .sum::<f64>()
                     / 5.0;
+                let nospeed = Variation {
+                    run_pace_jitter: 0.0,
+                    lap_pace_jitter: 0.0,
+                    speed_wobble: 0.0,
+                    ..Variation::default()
+                };
+                let c: f64 = (1..=5)
+                    .map(|s| app_measured_speed(route, v, nospeed, 1800.0, s))
+                    .sum::<f64>()
+                    / 5.0;
+                let norun = Variation {
+                    run_pace_jitter: 0.0,
+                    ..Variation::default()
+                };
+                let d: f64 = (1..=20)
+                    .map(|s| app_measured_speed(route, v, norun, 1800.0, s))
+                    .sum::<f64>()
+                    / 20.0;
                 eprintln!(
-                    "{route} {v} m/s: 匀速 {:+.2}%  拟真(中) {:+.2}%",
+                    "{route} {v} m/s: 匀速 {:+.2}%  拟真(中) {:+.2}%  仅轨迹 {:+.2}%  无整次 {:+.2}%",
                     (a / v - 1.0) * 100.0,
-                    (b / v - 1.0) * 100.0
+                    (b / v - 1.0) * 100.0,
+                    (c / v - 1.0) * 100.0,
+                    (d / v - 1.0) * 100.0
                 );
             }
         }

@@ -33,6 +33,8 @@ export interface Settings {
   goal: GoalKind;
   goalMinutes: number;
   goalKm: number;
+  /** Extra km run on top of goalKm, as a safety margin. */
+  goalMarginKm: number;
   onFinish: FinishAction;
   udid: string | null;
   ddiDir: string | null;

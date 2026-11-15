@@ -1,9 +1,12 @@
 <script lang="ts">
+  // The "treadmill display": how far you've run, how much is left, when you finish.
   import { app } from "../lib/store.svelte";
   import { durationText, km, paceText } from "../lib/format";
   import Readiness from "./Readiness.svelte";
+  import { primeAudio } from "../lib/alert";
 
   const s = $derived(app.snapshot);
+  const st = $derived(app.settings);
   const phase = $derived(s.phase);
 
   const PHASE: Record<string, { label: string; tone: string }> = {
@@ -12,25 +15,55 @@
     running: { label: "跑步中", tone: "run" },
     paused: { label: "已暂停", tone: "pause" },
     reconnecting: { label: "连接中断，重连中", tone: "busy" },
-    finished: { label: "已达到目标", tone: "done" },
+    finished: { label: "跑完了", tone: "done" },
     stopping: { label: "正在停止", tone: "busy" },
   };
   const head = $derived(PHASE[phase] ?? PHASE.idle);
 
-  // Live metrics while a run exists; otherwise show the last run (if any).
-  const hasRun = $derived(s.distanceM > 0 || phase !== "idle");
-  const goalLeft = $derived.by(() => {
-    const sa = s.stopAfter;
-    const v = s.targetSpeedMps || app.settings.speedMps;
-    if (sa.distanceM) {
-      const left = Math.max(0, sa.distanceM - s.distanceM);
-      return { text: `${km(s.distanceM)} / ${km(sa.distanceM)} km`, eta: left / v };
+  // Before the first run, preview the target from the current settings.
+  const fresh = $derived(phase === "idle" && s.distanceM === 0);
+  const needsSetup = $derived(!!app.devices.error || !app.device);
+  const avgSpeed = $derived(s.movingS > 5 ? s.distanceM / s.movingS : 0);
+  const target = $derived.by(() => {
+    if (fresh) {
+      return {
+        distanceM: st.goal === "distance" ? (st.goalKm + st.goalMarginKm) * 1000 : null,
+        durationS: st.goal === "time" ? st.goalMinutes * 60 : null,
+      };
     }
-    if (sa.durationS) {
-      return { text: `${durationText(s.movingS)} / ${durationText(sa.durationS)}`, eta: Math.max(0, sa.durationS - s.movingS) };
-    }
-    return null;
+    return s.stopAfter;
   });
+  const speedForEta = $derived(avgSpeed || s.targetSpeedMps || st.speedMps);
+  const view = $derived.by(() => {
+    if (target.distanceM) {
+      const left = Math.max(0, target.distanceM - s.distanceM);
+      return {
+        done: km(s.distanceM), doneUnit: "km",
+        left: km(left), leftUnit: "km",
+        frac: Math.min(1, s.distanceM / target.distanceM),
+        eta: left / speedForEta,
+        total: `${km(target.distanceM, 1)} km`,
+      };
+    }
+    if (target.durationS) {
+      const left = Math.max(0, target.durationS - s.movingS);
+      return {
+        done: durationText(s.movingS), doneUnit: "",
+        left: durationText(left), leftUnit: "",
+        frac: Math.min(1, s.movingS / target.durationS),
+        eta: left,
+        total: durationText(target.durationS),
+      };
+    }
+    return { done: km(s.distanceM), doneUnit: "km", left: null, leftUnit: "", frac: 0, eta: 0, total: null };
+  });
+  const etaClock = $derived.by(() => {
+    if (view.eta <= 0 || phase !== "running") return null;
+    const d = new Date(Date.now() + view.eta * 1000);
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  });
+
+  const plannedKms = $derived(target.distanceM ? Math.ceil(target.distanceM / 1000) : 0);
 
   const blockers = $derived.by(() => {
     const out: string[] = [];
@@ -41,7 +74,6 @@
   });
   const canStart = $derived(phase === "idle" && !app.busy && blockers.length === 0);
 
-  // Screen-reader announcement for phase changes only (not every tick).
   let announce = $state("");
   $effect(() => {
     announce = s.step ?? head.label;
@@ -52,9 +84,8 @@
   <div class="status {head.tone}">
     <span class="pulse" aria-hidden="true"></span>
     <h2 id="run-title">{head.label}</h2>
-    {#if s.step}
-      <span class="step">{s.step}</span>
-    {/if}
+    {#if s.routeName && phase !== "idle"}<span class="route">{s.routeName}</span>{/if}
+    {#if s.step}<span class="step">{s.step}</span>{/if}
   </div>
   <p class="sr-only" aria-live="polite">{announce}</p>
 
@@ -66,53 +97,79 @@
         <button class="btn sm primary" onclick={() => app.start()} disabled={!canStart}>重试</button>
       </div>
     </div>
-  {:else if phase === "idle" && !hasRun}
+  {:else if phase === "idle" && needsSetup}
     <Readiness />
   {/if}
 
-  {#if hasRun && !(phase === "idle" && s.error)}
-    <div class="metrics">
-      <div class="metric big">
-        <span class="label">距离</span>
-        <span class="value num">{km(s.distanceM)}<small>km</small></span>
+  <!-- Hero: done vs left -->
+  <div class="hero" class:done={phase === "finished"}>
+    <div class="pair">
+      <div class="half">
+        <span class="hl">已跑</span>
+        <span class="hv num">{view.done}<small>{view.doneUnit}</small></span>
       </div>
-      <div class="metric">
-        <span class="label">用时</span>
-        <span class="value num">{durationText(s.movingS)}</span>
-      </div>
-      <div class="metric">
-        <span class="label">实时配速</span>
-        <span class="value num">{phase === "running" ? paceText(s.speedMps) : "--'--\""}</span>
-      </div>
-      <div class="metric">
-        <span class="label">圈数</span>
-        <span class="value num">{s.laps}<small>+{Math.round(s.lapProgress * 100)}%</small></span>
-      </div>
+      {#if view.left !== null}
+        <div class="half right">
+          <span class="hl">{phase === "finished" ? "目标" : "还剩"}</span>
+          <span class="hv num dim">{phase === "finished" ? view.total : view.left}<small>{phase === "finished" ? "" : view.leftUnit}</small></span>
+        </div>
+      {/if}
     </div>
-    {#if goalLeft}
-      <div class="goal">
-        <div class="bar" role="progressbar" aria-label="目标进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round((s.goalProgress ?? 0) * 100)}>
-          <div class="fill" style="width:{(s.goalProgress ?? 0) * 100}%"></div>
-        </div>
-        <div class="goaltext">
-          <span class="num">{goalLeft.text}</span>
-          {#if phase === "running" && goalLeft.eta > 0}
-            <span class="muted">还需约 {durationText(goalLeft.eta)}</span>
-          {/if}
-        </div>
+    {#if view.left !== null}
+      <div class="bar" role="progressbar" aria-label="目标进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(view.frac * 100)}>
+        <div class="fill" style="width:{view.frac * 100}%"></div>
       </div>
+      <div class="sub num">
+        <span>{Math.round(view.frac * 100)}%</span>
+        <span>目标 {view.total}</span>
+      </div>
+      <div class="when num">
+        {#if fresh}
+          <span class="wl">预计用时</span><span class="wv">{durationText(view.eta)}</span>
+        {:else if phase === "finished"}
+          <span class="wl">完成</span><span class="wv">用时 {durationText(s.movingS)}</span>
+        {:else if etaClock}
+          <span class="wl">预计</span><span class="wv">{etaClock} 跑完</span><span class="wl">还需 {durationText(view.eta)}</span>
+        {:else}
+          <span class="wl">还需</span><span class="wv">{durationText(view.eta)}</span>
+        {/if}
+      </div>
+    {:else}
+      <div class="sub"><span>不限距离，手动结束</span></div>
     {/if}
-  {/if}
+  </div>
+
+  <div class="metrics">
+    <div class="metric">
+      <span class="label">用时</span>
+      <span class="value num">{durationText(s.movingS)}</span>
+    </div>
+    <div class="metric">
+      <span class="label">当前配速</span>
+      <span class="value num">{phase === "running" ? paceText(s.speedMps) : "--'--\""}</span>
+    </div>
+    <div class="metric">
+      <span class="label">{fresh ? "设定配速" : "平均配速"}</span>
+      <span class="value num">{fresh ? paceText(st.speedMps) : paceText(avgSpeed)}</span>
+    </div>
+    <div class="metric">
+      <span class="label">圈数</span>
+      <span class="value num">{(s.laps + (phase === "idle" ? 0 : s.lapProgress)).toFixed(1)}</span>
+    </div>
+  </div>
+
 
   {#if phase === "finished"}
-    <div class="finish">
-      已停在终点。先在校园跑 App 里<strong>结束跑步</strong>，再点下面的按钮恢复真实定位。
+    <div class="finish" role="status">
+      <strong>已停在终点。</strong>先在校园跑 App 里<strong>结束跑步</strong>，再点「结束并恢复定位」。
     </div>
+  {:else if phase === "idle" && !fresh}
+    <p class="lastrun">上次跑步的成绩 · 下次开始时清零</p>
   {/if}
 
   <div class="controls">
     {#if phase === "idle"}
-      <button class="btn primary go" disabled={!canStart} onclick={() => app.start()}>
+      <button class="btn primary go" disabled={!canStart} onclick={() => { primeAudio(); app.start(); }}>
         <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l13-7.5z" fill="currentColor" /></svg>
         开始跑步
       </button>
@@ -142,22 +199,28 @@
 
 <style>
   .panel {
-    padding: 16px;
+    padding: 18px 20px;
     display: flex;
     flex-direction: column;
     gap: 14px;
+    min-height: 0;
+    overflow: auto;
   }
   .status {
     display: flex;
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
-    min-height: 26px;
+    min-height: 24px;
   }
   .status h2 {
     margin: 0;
-    font-size: 17px;
+    font-size: 16px;
     letter-spacing: -0.01em;
+  }
+  .route {
+    font-size: 12.5px;
+    color: var(--muted);
   }
   .step {
     flex-basis: 100%;
@@ -191,51 +254,77 @@
       opacity: 0.6;
     }
   }
-  .metrics {
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    gap: 10px 12px;
-  }
-  .metric {
+
+  .hero {
+    flex: 1;
+    min-height: 0;
+    padding: 22px 24px 20px;
+    border-radius: 14px;
+    background: var(--accent-soft);
     display: flex;
     flex-direction: column;
-    gap: 1px;
-    padding: 8px 10px;
-    border-radius: 10px;
-    background: var(--panel-2);
+    justify-content: center;
+    gap: 14px;
   }
-  .metric.big {
-    grid-column: 1 / -1;
-    background: var(--accent-soft);
+  .when {
+    margin-top: 6px;
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 10px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
   }
-  .label {
-    font-size: 11.5px;
-    color: var(--muted);
-  }
-  .value {
-    font-size: 19px;
-    font-weight: 650;
-  }
-  .big .value {
-    font-size: 40px;
-    line-height: 1.05;
-    font-weight: 700;
-  }
-  .value small {
-    font-size: 0.45em;
-    font-weight: 600;
-    margin-left: 4px;
+  .wl {
+    font-size: 14px;
     color: var(--fg-2);
   }
-  .goal {
+  .wv {
+    font-size: 30px;
+    font-weight: 700;
+  }
+  .hero.done {
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+  .pair {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 16px;
+  }
+  .half {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 2px;
+  }
+  .half.right {
+    align-items: flex-end;
+  }
+  .hl {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--fg-2);
+  }
+  .hv {
+    font-size: 72px;
+    font-weight: 750;
+    line-height: 1;
+    letter-spacing: -0.02em;
+  }
+  .hv.dim {
+    color: var(--fg-2);
+  }
+  .hv small {
+    font-size: 17px;
+    font-weight: 650;
+    margin-left: 5px;
+    color: var(--fg-2);
+    letter-spacing: 0;
   }
   .bar {
-    height: 8px;
+    height: 14px;
     border-radius: 99px;
-    background: var(--panel-2);
+    background: var(--panel);
     border: 1px solid var(--line);
     overflow: hidden;
   }
@@ -243,23 +332,45 @@
     height: 100%;
     background: var(--accent);
     border-radius: inherit;
-    transition: width 0.3s linear;
   }
-  .goaltext {
+  .sub {
     display: flex;
     justify-content: space-between;
-    font-size: 12.5px;
+    font-size: 13px;
+    font-weight: 550;
+    color: var(--fg-2);
   }
-  .muted {
+
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+  }
+  .metric {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 9px 12px;
+    border-radius: 10px;
+    background: var(--panel-2);
+  }
+  .label {
+    font-size: 11.5px;
     color: var(--muted);
   }
+  .value {
+    font-size: 21px;
+    font-weight: 650;
+  }
+
+
   .controls {
     display: flex;
     gap: 8px;
   }
   .controls .btn {
-    height: 44px;
-    font-size: 15px;
+    height: 48px;
+    font-size: 15.5px;
     border-radius: 12px;
   }
   .go {
@@ -269,7 +380,8 @@
     width: 96px;
     color: var(--danger);
   }
-  .blocker {
+  .blocker,
+  .lastrun {
     margin: -6px 0 0;
     font-size: 12.5px;
     color: var(--muted);
@@ -294,10 +406,11 @@
     margin-top: 10px;
   }
   .finish {
-    font-size: 13px;
-    padding: 10px 12px;
+    font-size: 14px;
+    padding: 12px 14px;
     border-radius: 10px;
     background: var(--accent-soft);
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
     color: var(--fg);
   }
 </style>

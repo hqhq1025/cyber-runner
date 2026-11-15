@@ -1,151 +1,264 @@
 <script lang="ts">
+  // Treadmill-style controls: one knob for speed, one for how far.
+  // Everything else lives under "更多设置".
   import { app } from "../lib/store.svelte";
-  import { durationText, paceText } from "../lib/format";
+  import { durationText, lengthText, paceText } from "../lib/format";
   import Segmented from "./Segmented.svelte";
-  import type { FinishAction, GoalKind, Realism } from "../lib/api";
+  import type { FinishAction, GoalKind, LoopMode, Realism } from "../lib/api";
 
-  const S_MIN = 1.0;
-  const S_MAX = 6.5;
-  const PRESETS = [
-    { label: "快走", v: 1.8 },
-    { label: "慢跑", v: 2.6 },
-    { label: "常规", v: 3.2 },
-    { label: "较快", v: 4.0 },
+  let { onimport, onmanage }: { onimport: () => void; onmanage: () => void } = $props();
+
+  // Pace in seconds per km. The engine caps speed at 3'05"/km, so even with
+  // realism wobble the pace never gets under 3'00" (campus apps void that).
+  const FASTEST = 185;
+  const SLOWEST = 600;
+  const PACE_STEP = 5;
+  // A little slower than the round numbers, as headroom for the wobble.
+  const PACES = [
+    { label: "5 分配", sec: 310 },
+    { label: "4 分配", sec: 250 },
+    { label: "3 分配", sec: 195 },
   ];
+  const KMS = [3, 5, 8];
+
   const st = $derived(app.settings);
   const live = $derived(app.active && app.phase !== "stopping");
-  const fill = $derived(((Math.min(S_MAX, Math.max(S_MIN, st.speedMps)) - S_MIN) / (S_MAX - S_MIN)) * 100);
+  const paceSec = $derived(Math.round(1000 / st.speedMps));
+  const route = $derived(app.selectedRoute);
+  const closed = $derived(st.loopMode === "closed" || (st.loopMode === "auto" && !!route?.autoClosed));
+  const lapLen = $derived(route ? (closed ? route.lapClosedM : route.lapOutAndBackM) : 0);
+  const runKm = $derived(st.goalKm + st.goalMarginKm);
+
+  function setPace(sec: number) {
+    const s = Math.min(SLOWEST, Math.max(FASTEST, Math.round(sec)));
+    app.update({ speedMps: 1000 / s });
+  }
+  function setKm(k: number) {
+    app.update({ goalKm: Math.min(100, Math.max(0.5, Math.round(k * 2) / 2)) });
+  }
+  function setMinutes(m: number) {
+    app.update({ goalMinutes: Math.min(600, Math.max(1, Math.round(m))) });
+  }
+
+  // Press-and-hold repeats, like treadmill buttons.
+  let holdTimer: ReturnType<typeof setTimeout> | undefined;
+  function hold(fn: () => void) {
+    return {
+      onpointerdown: (e: PointerEvent) => {
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        fn();
+        let delay = 380;
+        const tick = () => {
+          fn();
+          delay = Math.max(70, delay * 0.8);
+          holdTimer = setTimeout(tick, delay);
+        };
+        holdTimer = setTimeout(tick, delay);
+      },
+      onpointerup: () => clearTimeout(holdTimer),
+      onpointercancel: () => clearTimeout(holdTimer),
+      onkeydown: (e: KeyboardEvent) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          fn();
+        }
+      },
+    };
+  }
+  const faster = hold(() => setPace(paceSec - PACE_STEP));
+  const slower = hold(() => setPace(paceSec + PACE_STEP));
+  const more = hold(() => (st.goal === "time" ? setMinutes(st.goalMinutes + 1) : setKm(st.goalKm + 0.5)));
+  const less = hold(() => (st.goal === "time" ? setMinutes(st.goalMinutes - 1) : setKm(st.goalKm - 0.5)));
 
   const estimate = $derived.by(() => {
-    if (st.goal === "distance") return `预计用时 ${durationText((st.goalKm * 1000) / st.speedMps)}`;
-    if (st.goal === "time") return `预计 ${((st.speedMps * st.goalMinutes * 60) / 1000).toFixed(2)} km`;
+    if (st.goal === "distance") {
+      const laps = lapLen > 0 ? ` · ${((runKm * 1000) / lapLen).toFixed(1)} 圈` : "";
+      return `约 ${durationText((runKm * 1000) / st.speedMps)}${laps}`;
+    }
+    if (st.goal === "time") return `约 ${((st.speedMps * st.goalMinutes * 60) / 1000).toFixed(2)} km`;
     return "一直跑，直到手动结束";
   });
 
-  function setSpeed(v: number) {
-    app.update({ speedMps: Math.round(Math.min(S_MAX, Math.max(S_MIN, v)) * 10) / 10 });
-  }
-  function stepGoal(delta: number) {
-    if (st.goal === "distance") app.update({ goalKm: Math.max(0.1, Math.round((st.goalKm + delta * 0.1) * 10) / 10) });
-    else app.update({ goalMinutes: Math.max(1, st.goalMinutes + delta) });
-  }
-  function onGoalInput(e: Event) {
-    const v = Number((e.currentTarget as HTMLInputElement).value);
-    if (!isFinite(v) || v <= 0) return;
-    if (st.goal === "distance") app.update({ goalKm: Math.min(100, v) });
-    else app.update({ goalMinutes: Math.min(600, Math.round(v)) });
-  }
-
-  const REALISM_HINT: Record<Realism, string> = {
-    off: "严格匀速、贴线行进",
-    low: "轻微的速度与轨迹波动",
-    normal: "像真人一样：每圈配速不同，轨迹略有偏移",
-    high: "波动更明显（±7% 配速，±3.5 m 偏移）",
-  };
+  const REALISM: Record<Realism, string> = { off: "关", low: "低", normal: "中", high: "高" };
+  const summary = $derived(
+    [
+      `拟真 ${REALISM[st.realism]}`,
+      st.goal === "distance" ? `余量 +${st.goalMarginKm} km` : st.goal === "time" ? "按时间" : "不限",
+      st.onFinish === "hold" ? "跑完停在终点" : "跑完恢复定位",
+    ].join(" · "),
+  );
 </script>
 
 <section class="card panel" aria-labelledby="plan-title">
   <div class="row-head">
-    <h2 class="card-title" id="plan-title">跑步设置</h2>
-    {#if live}<span class="live">修改实时生效</span>{/if}
+    <h2 class="card-title" id="plan-title">跑步机</h2>
+    {#if live}<span class="live">调整实时生效</span>{/if}
   </div>
 
-  <div class="group">
-    <div class="pace">
-      <div>
-        <span class="pace-big num">{paceText(st.speedMps)}</span><span class="unit">/km</span>
+  <div class="routebar">
+    <label class="sr-only" for="route-select">路线</label>
+    <select
+      id="route-select"
+      class="input"
+      value={st.routeId}
+      disabled={app.active}
+      title={app.active ? "跑步中不能换路线" : undefined}
+      onchange={(e) => app.update({ routeId: e.currentTarget.value })}
+    >
+      <optgroup label="内置路线">
+        {#each app.routes.filter((r) => r.builtin) as r (r.id)}
+          <option value={r.id}>{r.name}</option>
+        {/each}
+      </optgroup>
+      {#if app.routes.some((r) => !r.builtin)}
+        <optgroup label="我导入的">
+          {#each app.routes.filter((r) => !r.builtin) as r (r.id)}
+            <option value={r.id}>{r.name}</option>
+          {/each}
+        </optgroup>
+      {/if}
+    </select>
+    <button class="btn icon" onclick={onimport} disabled={app.active} title="导入路线" aria-label="导入路线">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+    </button>
+  </div>
+  {#if route}<p class="routefact">一圈 <b class="num">{lengthText(lapLen)}</b></p>{/if}
+
+  <!-- Speed knob -->
+  <div class="knob" role="group" aria-label="配速">
+    <span class="klabel">配速</span>
+    <div class="kline">
+      <button class="kbtn" aria-label="慢一点" title="慢 5 秒" {...slower}>−</button>
+      <div class="kval">
+        <span class="num">{paceText(st.speedMps)}</span><span class="ku">/km</span>
       </div>
-      <span class="speed num">{st.speedMps.toFixed(1)} m/s · {(st.speedMps * 3.6).toFixed(1)} km/h</span>
+      <button class="kbtn" aria-label="快一点" title="快 5 秒" {...faster} disabled={paceSec <= FASTEST}>+</button>
     </div>
-    <label class="sr-only" for="speed">速度（米每秒）</label>
-    <input
-      id="speed"
-      class="range"
-      type="range"
-      min={S_MIN}
-      max={S_MAX}
-      step="0.1"
-      value={st.speedMps}
-      style="--fill:{fill}%"
-      aria-valuetext="配速 {paceText(st.speedMps)} 每公里"
-      oninput={(e) => setSpeed(Number(e.currentTarget.value))}
-    />
-    <div class="presets">
-      {#each PRESETS as p (p.v)}
-        <button
-          class="chip"
-          class:on={Math.abs(st.speedMps - p.v) < 0.05}
-          onclick={() => setSpeed(p.v)}
-        >
-          <span>{p.label}</span><span class="num">{paceText(p.v)}</span>
+    <div class="chips">
+      {#each PACES as p (p.sec)}
+        <button class="chip" class:on={Math.abs(paceSec - p.sec) < 1} onclick={() => setPace(p.sec)}>
+          <span>{p.label}</span><span class="num sub">{paceText(1000 / p.sec)}</span>
         </button>
       {/each}
     </div>
+    <p class="khint num">{(st.speedMps * 3.6).toFixed(1)} km/h · 最快 3'05"，不会快过 3 分配</p>
   </div>
 
-  <div class="group">
-    <span class="glabel">目标</span>
-    <Segmented
-      label="目标"
-      value={st.goal}
-      options={[
-        { value: "distance" as GoalKind, label: "按距离" },
-        { value: "time" as GoalKind, label: "按时间" },
-        { value: "none" as GoalKind, label: "不限" },
-      ]}
-      onchange={(v) => app.update({ goal: v })}
-    />
-    {#if st.goal !== "none"}
-      <div class="goalrow">
-        <div class="stepper">
-          <button class="btn icon" aria-label="减少" onclick={() => stepGoal(-1)}>−</button>
-          <input
-            class="input num"
-            type="number"
-            min={st.goal === "distance" ? 0.1 : 1}
-            step={st.goal === "distance" ? 0.1 : 1}
-            value={st.goal === "distance" ? st.goalKm : st.goalMinutes}
-            onchange={onGoalInput}
-            aria-label={st.goal === "distance" ? "目标距离（公里）" : "目标时间（分钟）"}
-          />
-          <span class="u">{st.goal === "distance" ? "km" : "分钟"}</span>
-          <button class="btn icon" aria-label="增加" onclick={() => stepGoal(1)}>+</button>
+  <!-- Distance (or time) knob -->
+  <div class="knob" role="group" aria-label="跑多远">
+    <span class="klabel">{st.goal === "time" ? "跑多久" : "跑多远"}</span>
+    {#if st.goal === "none"}
+      <p class="khint">不限距离，手动结束。可在「更多设置」里改。</p>
+    {:else}
+      <div class="kline">
+        <button class="kbtn" aria-label="减少" {...less}>−</button>
+        <div class="kval">
+          {#if st.goal === "time"}
+            <span class="num">{st.goalMinutes}</span><span class="ku">分钟</span>
+          {:else}
+            <span class="num">{runKm.toFixed(1)}</span><span class="ku">km</span>
+          {/if}
         </div>
-        <span class="est">{estimate}</span>
+        <button class="kbtn" aria-label="增加" {...more}>+</button>
       </div>
-      <div class="finish">
-        <span class="flabel">到达后</span>
+      {#if st.goal === "distance"}
+        <div class="chips">
+          {#each KMS as k (k)}
+            <button class="chip" class:on={st.goalKm === k} onclick={() => setKm(k)}>
+              <span>{k} km 档</span><span class="num sub">实跑 {(k + st.goalMarginKm).toFixed(1)}</span>
+            </button>
+          {/each}
+        </div>
+        <p class="khint num">
+          {#if st.goalMarginKm > 0}{st.goalKm} km + {st.goalMarginKm} km 余量（防 App 少记）· {/if}{estimate}
+        </p>
+      {:else}
+        <p class="khint num">{estimate}</p>
+      {/if}
+    {/if}
+  </div>
+
+  <details class="more">
+    <summary>
+      <span>更多设置</span>
+      <span class="msum">{summary}</span>
+    </summary>
+    <div class="mbody">
+      <div class="mrow">
+        <span class="mlabel">目标方式</span>
         <Segmented
           size="sm"
-          label="到达目标后"
+          label="目标方式"
+          value={st.goal}
+          options={[
+            { value: "distance" as GoalKind, label: "按距离" },
+            { value: "time" as GoalKind, label: "按时间" },
+            { value: "none" as GoalKind, label: "不限" },
+          ]}
+          onchange={(v) => app.update({ goal: v })}
+        />
+      </div>
+      {#if st.goal === "distance"}
+        <div class="mrow">
+          <span class="mlabel" title="校园跑 App 计的距离可能偏少，多跑一点更稳">多跑余量</span>
+          <Segmented
+            size="sm"
+            label="多跑余量"
+            value={String(st.goalMarginKm)}
+            options={[0, 0.5, 1, 2].map((m) => ({ value: String(m), label: m === 0 ? "不加" : `+${m}` }))}
+            onchange={(v) => app.update({ goalMarginKm: Number(v) })}
+          />
+        </div>
+      {/if}
+      <div class="mrow">
+        <span class="mlabel">跑完后</span>
+        <Segmented
+          size="sm"
+          label="跑完后"
           value={st.onFinish}
           options={[
             { value: "hold" as FinishAction, label: "停在终点", title: "方便先在校园跑 App 里结束，再恢复定位" },
-            { value: "restore" as FinishAction, label: "立即恢复定位" },
+            { value: "restore" as FinishAction, label: "恢复定位" },
           ]}
           onchange={(v) => app.update({ onFinish: v })}
         />
       </div>
-    {:else}
-      <span class="est">{estimate}</span>
-    {/if}
-  </div>
-
-  <div class="group">
-    <span class="glabel">拟真程度</span>
-    <Segmented
-      label="拟真程度"
-      value={st.realism}
-      options={[
-        { value: "off" as Realism, label: "关" },
-        { value: "low" as Realism, label: "低" },
-        { value: "normal" as Realism, label: "中" },
-        { value: "high" as Realism, label: "高" },
-      ]}
-      onchange={(v) => app.update({ realism: v })}
-    />
-    <span class="est">{REALISM_HINT[st.realism]}</span>
-  </div>
+      <div class="mrow">
+        <span class="mlabel" title="每次轨迹都不同，配速有自然起伏">拟真程度</span>
+        <Segmented
+          size="sm"
+          label="拟真程度"
+          value={st.realism}
+          options={[
+            { value: "off" as Realism, label: "关" },
+            { value: "low" as Realism, label: "低" },
+            { value: "normal" as Realism, label: "中" },
+            { value: "high" as Realism, label: "高" },
+          ]}
+          onchange={(v) => app.update({ realism: v })}
+        />
+      </div>
+      <div class="mrow">
+        <span class="mlabel">路线形态</span>
+        <Segmented
+          size="sm"
+          label="路线形态"
+          value={st.loopMode}
+          disabled={app.active}
+          options={[
+            { value: "auto" as LoopMode, label: "自动", title: "首尾相距 60 米以内按绕圈，否则往返" },
+            { value: "closed" as LoopMode, label: "绕圈" },
+            { value: "outAndBack" as LoopMode, label: "往返" },
+          ]}
+          onchange={(v) => app.update({ loopMode: v })}
+        />
+      </div>
+      <div class="mrow">
+        <span class="mlabel">我的路线</span>
+        <button class="btn sm" onclick={onmanage} disabled={app.active}>管理导入的路线</button>
+      </div>
+    </div>
+  </details>
 </section>
 
 <style>
@@ -153,7 +266,7 @@
     padding: 16px;
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 14px;
   }
   .row-head {
     display: flex;
@@ -165,38 +278,87 @@
     color: var(--accent);
     font-weight: 600;
   }
-  .group {
+  .routebar {
+    display: flex;
+    gap: 6px;
+  }
+  .routebar select {
+    flex: 1;
+    min-width: 0;
+    font-weight: 600;
+  }
+  .routefact {
+    margin: -8px 0 0;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .routefact b {
+    color: var(--fg-2);
+  }
+  .knob {
     display: flex;
     flex-direction: column;
     gap: 8px;
+    padding: 12px;
+    border-radius: 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
   }
-  .glabel,
-  .flabel {
+  .klabel {
     font-size: 12.5px;
     font-weight: 600;
     color: var(--fg-2);
   }
-  .pace {
+  .kline {
     display: flex;
-    align-items: baseline;
-    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
   }
-  .pace-big {
-    font-size: 30px;
-    font-weight: 700;
+  .kval {
+    flex: 1;
+    text-align: center;
   }
-  .unit {
-    margin-left: 3px;
-    color: var(--muted);
+  .kval .num {
+    font-size: 34px;
+    font-weight: 720;
+    letter-spacing: -0.01em;
+  }
+  .ku {
+    margin-left: 4px;
+    font-size: 13px;
     font-weight: 600;
-  }
-  .speed {
-    font-size: 12px;
     color: var(--muted);
   }
-  .presets {
+  .kbtn {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    border: 1px solid var(--line-strong);
+    background: var(--panel);
+    color: var(--fg);
+    font-size: 24px;
+    line-height: 1;
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    place-items: center;
+    cursor: pointer;
+    user-select: none;
+    touch-action: none;
+  }
+  .kbtn:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .kbtn:active:not(:disabled) {
+    transform: scale(0.95);
+    background: var(--accent-soft);
+  }
+  .kbtn:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+  .chips {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
     gap: 6px;
   }
   .chip {
@@ -206,12 +368,13 @@
     padding: 5px 0;
     border-radius: 9px;
     border: 1px solid var(--line);
-    background: var(--panel-2);
-    font-size: 12px;
+    background: var(--panel);
+    font-size: 12.5px;
     color: var(--fg-2);
-    line-height: 1.25;
+    line-height: 1.3;
+    cursor: pointer;
   }
-  .chip .num {
+  .chip .sub {
     font-size: 11px;
     color: var(--muted);
   }
@@ -222,41 +385,64 @@
     border-color: var(--accent);
     background: var(--accent-soft);
     color: var(--fg);
+    font-weight: 600;
   }
-  .goalrow {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-  }
-  .stepper {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-  .stepper .input {
-    width: 64px;
+  .khint {
+    margin: 0;
+    font-size: 11.5px;
+    color: var(--muted);
     text-align: center;
-    padding: 0 4px;
   }
-  .stepper .u {
-    font-size: 12.5px;
+  .more {
+    border-top: 1px solid var(--line);
+    padding-top: 10px;
+  }
+  .more summary {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 600;
     color: var(--fg-2);
-    margin: 0 4px 0 2px;
+    list-style: none;
   }
-  .est {
-    font-size: 12px;
+  .more summary::-webkit-details-marker {
+    display: none;
+  }
+  .more summary::before {
+    content: "›";
+    display: inline-block;
+    transition: transform 0.15s;
     color: var(--muted);
   }
-  .finish {
+  .more[open] summary::before {
+    transform: rotate(90deg);
+  }
+  .msum {
+    margin-left: auto;
+    font-size: 11.5px;
+    font-weight: 500;
+    color: var(--muted);
+  }
+  .mbody {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-top: 12px;
+  }
+  .mrow {
     display: flex;
     align-items: center;
     gap: 10px;
   }
-  .finish :global(.seg) {
+  .mrow :global(.seg) {
     flex: 1;
   }
-  input[type="number"]::-webkit-inner-spin-button {
-    -webkit-appearance: none;
+  .mlabel {
+    width: 60px;
+    flex-shrink: 0;
+    font-size: 12.5px;
+    color: var(--fg-2);
   }
 </style>
