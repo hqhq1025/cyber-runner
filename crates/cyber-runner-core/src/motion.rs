@@ -73,6 +73,28 @@ impl Variation {
         start_jitter_m: 0.0,
     };
 
+    /// "低" realism preset.
+    pub const LOW: Variation = Variation {
+        run_pace_jitter: 0.008,
+        lap_pace_jitter: 0.02,
+        speed_wobble: 0.015,
+        lane_m: 1.0,
+        lateral_jitter_m: 1.0,
+        fine_jitter_m: 0.4,
+        start_jitter_m: 5.0,
+    };
+
+    /// "高" realism preset.
+    pub const HIGH: Variation = Variation {
+        run_pace_jitter: 0.025,
+        lap_pace_jitter: 0.07,
+        speed_wobble: 0.05,
+        lane_m: 2.5,
+        lateral_jitter_m: 3.5,
+        fine_jitter_m: 1.0,
+        start_jitter_m: 15.0,
+    };
+
     fn clamped(self) -> Self {
         let c = |v: f64, hi: f64| if v.is_finite() { v.clamp(0.0, hi) } else { 0.0 };
         Self {

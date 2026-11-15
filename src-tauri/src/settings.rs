@@ -22,25 +22,9 @@ impl Realism {
     pub fn variation(self) -> Variation {
         match self {
             Realism::Off => Variation::NONE,
-            Realism::Low => Variation {
-                run_pace_jitter: 0.008,
-                lap_pace_jitter: 0.02,
-                speed_wobble: 0.015,
-                lane_m: 1.0,
-                lateral_jitter_m: 1.0,
-                fine_jitter_m: 0.4,
-                start_jitter_m: 5.0,
-            },
+            Realism::Low => Variation::LOW,
             Realism::Normal => Variation::default(),
-            Realism::High => Variation {
-                run_pace_jitter: 0.025,
-                lap_pace_jitter: 0.07,
-                speed_wobble: 0.05,
-                lane_m: 2.5,
-                lateral_jitter_m: 3.5,
-                fine_jitter_m: 1.0,
-                start_jitter_m: 15.0,
-            },
+            Realism::High => Variation::HIGH,
         }
     }
 }

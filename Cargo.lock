@@ -733,6 +733,8 @@ dependencies = [
  "cyber-runner-core",
  "cyber-runner-engine",
  "dirs 6.0.0",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing-subscriber",
 ]

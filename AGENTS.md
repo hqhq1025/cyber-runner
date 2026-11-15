@@ -8,7 +8,7 @@
 |---|---|---|
 | `crates/cyber-runner-core` | 坐标系、路线解析、轨迹清理 (`track.rs`)、运动模型 (`motion.rs`) | `cargo test -p cyber-runner-core` |
 | `crates/cyber-runner-engine` | `device.rs` 配对/预检，`ddi.rs` 镜像，`link.rs` 隧道，`runner.rs` 运行 actor | `cargo test -p cyber-runner-engine` |
-| `crates/cyber-runner-cli` | 无界面调试工具 | `cargo run -p cyber-runner-cli -- devices` |
+| `crates/cyber-runner-cli` | 命令行（run / devices / routes / restore），与 app 共用数据目录和拟真预设 | `cargo test -p cyber-runner-cli` |
 | `src-tauri/src` | `commands.rs` IPC，`routes.rs` 路线库，`settings.rs`，`lib.rs` 事件泵/菜单/崩溃恢复 | `cargo test -p cyber-runner-app` |
 | `src/` | Svelte 5 + TS；`lib/api.ts` 是唯一的后端入口，`lib/mock.ts` 是浏览器模拟后端 | `npm run check` |
 
@@ -29,6 +29,11 @@
 - Webview 目标：macOS WKWebView（旧系统 ≈ Safari 16）+ Windows WebView2。新 CSS/HTML
   特性要有回退（例如用 `prefers-color-scheme` 而不是只用 `light-dark()`）。
 - 只做桌面横屏。
+- 配速上限 3'05"/km（`MAX_SPEED_MPS`），app 和 CLI 的 5/4/3 分配档都是 310/250/195 秒，
+  留出拟真起伏的余量，别改成整数分钟。
+- 拟真预设在 `Variation::{NONE, LOW, default(), HIGH}`，app 和 CLI 共用。
+- 只支持 USB 连接；无线连接会报 socket 错误，UI 里明确提示插线。
+- 没有 CI（GitHub Actions 已移除），提交前在本地跑 README 里的检查命令。
 
 ## 不要乱碰
 
@@ -37,4 +42,5 @@
 
 ## 协作
 
-Owner：hqhq1025。走分支 + PR，commit 用 conventional commits（`fix(engine): …`）。
+Owner：hqhq1025。commit 用 conventional commits（`fix(engine): …`），不要在提交信息或 PR
+里加任何 AI 助手署名（Co-Authored-By 等）。
