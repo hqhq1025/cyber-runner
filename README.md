@@ -90,8 +90,7 @@ npm run check && npm run build
 
 ### 打包
 
-`npm run tauri build`，或在 GitHub Actions 里手动运行 **Release** 工作流（产出 macOS
-通用 .dmg、Windows .msi / .exe 安装包和 CLI，挂在草稿 Release 上）。安装包未签名：
+在要用的那台电脑上本地运行 `npm run tauri build`（Mac 上出 .app/.dmg，Windows 上出 .msi/.exe）。安装包未签名：
 macOS 首次打开需右键 → 打开；Windows SmartScreen 选「仍要运行」。
 
 ## 致谢
