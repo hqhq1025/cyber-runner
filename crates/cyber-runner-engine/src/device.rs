@@ -255,19 +255,28 @@ pub async fn ensure_trusted(
     on_wait();
     let mut mux = usbmuxd().await?;
     let buid = mux.get_buid().await.map_err(EngineError::from)?;
-    let mut lockdown = LockdownClient::connect(&provider).await?;
     let host_id = uuid::Uuid::new_v4().to_string().to_uppercase();
-    let pf = tokio::time::timeout(
-        PAIR_TIMEOUT,
-        lockdown.pair(host_id, buid, Some("Cyber Runner")),
-    )
-    .await
-    .map_err(|_| EngineError::TrustTimeout)?
-    .map_err(|e| match e {
-        IdeviceError::UserDeniedPairing => EngineError::TrustDenied,
-        IdeviceError::PasswordProtected | IdeviceError::DeviceLocked => EngineError::DeviceLocked,
-        e => EngineError::Device(format!("配对失败：{e}")),
-    })?;
+    // A locked phone refuses to pair (and shows no trust dialog). Wait for
+    // the user to unlock instead of failing straight away.
+    let pair = async {
+        loop {
+            let mut lockdown = LockdownClient::connect(&provider).await?;
+            match lockdown
+                .pair(host_id.clone(), buid.clone(), Some("Cyber Runner"))
+                .await
+            {
+                Err(IdeviceError::PasswordProtected | IdeviceError::DeviceLocked) => {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                }
+                Err(IdeviceError::UserDeniedPairing) => break Err(EngineError::TrustDenied),
+                Err(e) => break Err(EngineError::Device(format!("配对失败：{e}"))),
+                Ok(pf) => break Ok(pf),
+            }
+        }
+    };
+    let pf = tokio::time::timeout(PAIR_TIMEOUT, pair)
+        .await
+        .map_err(|_| EngineError::TrustTimeout)??;
     let bytes = pf
         .clone()
         .serialize()

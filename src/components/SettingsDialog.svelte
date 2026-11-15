@@ -70,7 +70,7 @@
       <div class="row">
         <div>
           <p class="meta">
-            首次使用时自动下载（约 17 MB，来自 GitHub）并缓存。网络不通时，可以选择一个包含
+            首次使用时自动下载（约 17 MB，自动挑最快的线路，含国内镜像）并缓存。网络不通时，可以选择一个包含
             <code>Image.dmg</code>、<code>Image.dmg.trustcache</code>、<code>BuildManifest.plist</code> 的文件夹。
           </p>
           {#if app.settings.ddiDir}<p class="path">{app.settings.ddiDir}</p>{/if}

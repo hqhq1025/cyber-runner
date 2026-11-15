@@ -45,11 +45,12 @@ export function createMock(): Backend {
   ];
   let settings: Settings = {
     routeId: "builtin:bupt-xitucheng",
-    speedMps: 3.2,
+    speedMps: 1000 / 310,
     realism: "normal",
     loopMode: "auto",
     goal: "distance",
-    goalKm: 3,
+    goalKm: 5,
+    goalMarginKm: 1,
     goalMinutes: 20,
     onFinish: "hold",
     udid: null,
@@ -90,7 +91,7 @@ export function createMock(): Backend {
     settings.goal === "time"
       ? { durationS: settings.goalMinutes * 60, distanceM: null }
       : settings.goal === "distance"
-        ? { durationS: null, distanceM: settings.goalKm * 1000 }
+        ? { durationS: null, distanceM: (settings.goalKm + settings.goalMarginKm) * 1000 }
         : { durationS: null, distanceM: null };
 
   function posAt(r: RouteView, frac: number) {

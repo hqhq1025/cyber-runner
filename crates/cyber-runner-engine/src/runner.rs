@@ -814,7 +814,7 @@ impl ActorView {
         step("查找设备…");
         let provider = device::provider_for(udid).await?;
         let provider = device::ensure_trusted(provider, &self.config.pair_dir, || {
-            step("请在手机上点「信任」并输入锁屏密码")
+            step("请解锁手机，在弹窗中点「信任」并输入锁屏密码")
         })
         .await?;
         step("检查设备状态…");

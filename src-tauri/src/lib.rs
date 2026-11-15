@@ -236,11 +236,19 @@ pub fn run() {
                         let _ = h
                             .notification()
                             .builder()
-                            .title("Cyber Runner · 已达到目标")
-                            .body(
-                                "现在可以在校园跑 App 里结束跑步，然后回来点「停止」恢复真实定位。",
-                            )
+                            .title("Cyber Runner · 跑完了")
+                            .body(format!(
+                                "已跑 {:.2} km，用时 {}。先在校园跑 App 里结束跑步，再回来恢复真实定位。",
+                                s.distance_m / 1000.0,
+                                cyber_runner_core::format::duration_text(s.moving_s)
+                            ))
+                            .sound("Glass")
                             .show();
+                        if let Some(w) = h.get_webview_window("main") {
+                            let _ = w.request_user_attention(Some(
+                                tauri::UserAttentionType::Critical,
+                            ));
+                        }
                     }
                     last_phase = s.phase;
                     let _ = h.emit("snapshot", &s);

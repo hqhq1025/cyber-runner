@@ -9,6 +9,7 @@ import {
   type Settings,
   type Snapshot,
 } from "./api";
+import { chime, ensureNotificationPermission } from "./alert";
 
 export type Toast = { id: number; kind: "info" | "error" | "success"; text: string };
 
@@ -63,6 +64,10 @@ class AppStore {
       if (prev && prev !== "idle" && s.phase === "idle" && s.error) {
         this.toast("error", s.error.message);
       }
+      if (prev && prev !== "finished" && s.phase === "finished") {
+        chime();
+        this.toast("success", `跑完了：${(s.distanceM / 1000).toFixed(2)} km`);
+      }
     });
     await api.onDevices((d) => (this.devices = d));
     await api.onLog((l) => {
@@ -76,6 +81,7 @@ class AppStore {
       (over) => (this.dropHover = over),
     );
     this.ready = true;
+    void ensureNotificationPermission();
   }
 
   /** Apply a settings change; persisted (and pushed live) after 250 ms. */

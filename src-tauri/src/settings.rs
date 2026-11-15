@@ -23,15 +23,23 @@ impl Realism {
         match self {
             Realism::Off => Variation::NONE,
             Realism::Low => Variation {
+                run_pace_jitter: 0.008,
                 lap_pace_jitter: 0.02,
                 speed_wobble: 0.015,
+                lane_m: 1.0,
                 lateral_jitter_m: 1.0,
+                fine_jitter_m: 0.4,
+                start_jitter_m: 5.0,
             },
             Realism::Normal => Variation::default(),
             Realism::High => Variation {
+                run_pace_jitter: 0.025,
                 lap_pace_jitter: 0.07,
                 speed_wobble: 0.05,
+                lane_m: 2.5,
                 lateral_jitter_m: 3.5,
+                fine_jitter_m: 1.0,
+                start_jitter_m: 15.0,
             },
         }
     }
@@ -56,6 +64,9 @@ pub struct Settings {
     pub goal: GoalKind,
     pub goal_minutes: f64,
     pub goal_km: f64,
+    /// Extra distance on top of `goal_km`, in case the campus app counts a
+    /// little short. The run stops at `goal_km + goal_margin_km`.
+    pub goal_margin_km: f64,
     pub on_finish: FinishAction,
     /// Preferred device; `None` = first USB device.
     pub udid: Option<String>,
@@ -67,12 +78,14 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             route_id: DEFAULT_ROUTE_ID.into(),
-            speed_mps: 3.2,
+            // "5 分配" preset (5'10"/km).
+            speed_mps: 1000.0 / 310.0,
             realism: Realism::Normal,
             loop_mode: LoopMode::Auto,
             goal: GoalKind::Distance,
             goal_minutes: 20.0,
-            goal_km: 3.0,
+            goal_km: 5.0,
+            goal_margin_km: 1.0,
             on_finish: FinishAction::Hold,
             udid: None,
             ddi_dir: None,
@@ -90,7 +103,9 @@ impl Settings {
             },
             GoalKind::Distance => StopAfter {
                 duration_s: None,
-                distance_m: Some(self.goal_km.clamp(0.1, 100.0) * 1000.0),
+                distance_m: Some(
+                    (self.goal_km.clamp(0.1, 100.0) + self.goal_margin_km.clamp(0.0, 5.0)) * 1000.0,
+                ),
             },
         }
     }
@@ -101,8 +116,12 @@ impl Settings {
             self.goal_minutes = 20.0;
         }
         if !self.goal_km.is_finite() {
-            self.goal_km = 3.0;
+            self.goal_km = 5.0;
         }
+        if !self.goal_margin_km.is_finite() {
+            self.goal_margin_km = 1.0;
+        }
+        self.goal_margin_km = self.goal_margin_km.clamp(0.0, 5.0);
         self.goal_minutes = self.goal_minutes.clamp(1.0, 600.0);
         self.goal_km = self.goal_km.clamp(0.1, 100.0);
         self
