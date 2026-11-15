@@ -1,236 +1,299 @@
-//! Cyber Runner Tauri host 入口。
+//! Cyber Runner desktop host.
 //!
-//! Setup 流程：
-//! 1. 找 helper 二进制：
-//!    - dev: `target/debug/cyber-runner-helper`（与 app 同目录）
-//!    - release: `Cyber Runner.app/Contents/Resources/cyber-runner-helper`
-//! 2. 选引擎后端：
-//!    - 找到 helper → [`BundledHelperEngine`]（推荐路径，自家 root helper）
-//!    - 没找到但有 legacy → [`LegacyHelperEngine`]（兼容老 Run Control 安装）
-//!    - 都没有 → [`RealEngine`]（在 Tauri 进程内直接 spawn，需要 root）
-//! 3. AppState 自己的 log/pid 路径走 **CyberRunner/**
-//! 4. setup 里 spawn event pump（订阅 engine events → apply_event + emit）
-//! 5. WindowEvent::CloseRequested → engine.shutdown() —— 干净退 helper
+//! One process, no privileges: the engine thread talks to the phone, this
+//! layer forwards its state to the window as events and persists settings
+//! and imported routes.
 
 mod commands;
-mod state;
+mod routes;
+mod settings;
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use cyber_runner_engine::{
-    ensure_runtime_files, legacy_helper_available, BundledHelperEngine, Engine, LegacyHelperEngine,
-    RealEngine,
-};
-use state::AppState;
-use tauri::{Emitter, Manager, RunEvent, WindowEvent};
+use cyber_runner_engine::{Engine, EngineConfig, LogLine, Phase};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::{AppHandle, Emitter, Manager, RunEvent};
+use tauri_plugin_notification::NotificationExt;
 
-/// Cyber Runner 自己的 base dir —— log / pid / commands / helper.pid 都在这里。
-///
-/// 用 `dirs::data_local_dir()` 拿到平台标准位置：
-/// - macOS:   `~/Library/Application Support/CyberRunner` （路径与 v1 完全相同，无迁移）
-/// - Windows: `%LOCALAPPDATA%\CyberRunner` （= `~\AppData\Local\CyberRunner`）
-/// - Linux:   `~/.local/share/CyberRunner`
-const APP_BASE_LEAF: &str = "CyberRunner";
-const APP_RUNTIME_LEAF: &str = "runtime";
+use routes::RouteStore;
+use settings::{Settings, SettingsFile};
 
-fn default_base_dir() -> PathBuf {
+const LOG_HISTORY: usize = 300;
+
+pub struct AppState {
+    engine: Engine,
+    routes: RouteStore,
+    settings: Mutex<Settings>,
+    settings_file: SettingsFile,
+    logs: Arc<Mutex<VecDeque<LogLine>>>,
+}
+
+impl AppState {
+    fn log_history(&self) -> Vec<LogLine> {
+        self.logs.lock().unwrap().iter().cloned().collect()
+    }
+}
+
+/// Present while the phone's location is simulated by us. If the app dies
+/// without restoring (force quit, Dock → Quit on macOS which bypasses
+/// Tauri's exit events, power loss), the next launch restores it.
+const MARKER: &str = "simulating.json";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Marker {
+    udid: Option<String>,
+}
+
+/// Stop the run (restoring the real location) and quit.
+fn graceful_quit(app: &AppHandle) {
+    let engine = app.state::<AppState>().engine.clone();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = tokio::time::timeout(Duration::from_secs(10), engine.stop()).await;
+        app.exit(0);
+    });
+}
+
+/// Our own menu: the predefined macOS "Quit" item terminates the process
+/// directly and skips cleanup, so Cmd+Q is routed through `graceful_quit`.
+fn build_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let quit = MenuItem::with_id(app, "quit", "退出 Cyber Runner", true, Some("CmdOrCtrl+Q"))?;
+    let app_menu = Submenu::with_items(
+        app,
+        "Cyber Runner",
+        true,
+        &[
+            &PredefinedMenuItem::about(app, Some("关于 Cyber Runner"), None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::show_all(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+    let edit = Submenu::with_items(
+        app,
+        "编辑",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    let window = Submenu::with_items(
+        app,
+        "窗口",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+    Menu::with_items(app, &[&app_menu, &edit, &window])
+}
+
+fn data_dir() -> PathBuf {
     dirs::data_local_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(APP_BASE_LEAF)
-}
-
-fn default_runtime_dir() -> PathBuf {
-    default_base_dir().join(APP_RUNTIME_LEAF)
-}
-
-/// 找 bundled Python runtime 目录（含 main.py 等）。Layout 跟
-/// [`find_helper_binary`] 一样，按"app 同目录 → mac .app Resources/" 顺序查。
-///
-/// - dev：`<repo>/runtime/`，相对于 `target/debug/cyber-runner-app` 是 `../../runtime/`
-/// - macOS release：`.app/Contents/Resources/runtime/`
-/// - Windows NSIS/MSI release：与 cyber-runner-app.exe 同目录 `runtime/`
-fn find_bundled_runtime() -> Option<PathBuf> {
-    let cur = std::env::current_exe().ok()?;
-    let dir = cur.parent()?;
-
-    // dev 模式：target/debug/cyber-runner-app → repo/runtime/
-    // dir = target/debug/, dir.parent() = target/, dir.parent().parent() = repo/
-    if let Some(repo_root) = dir.parent().and_then(|p| p.parent()) {
-        let candidate = repo_root.join("runtime");
-        if candidate.join("main.py").exists() {
-            return Some(candidate);
-        }
-    }
-
-    // Same dir (Windows release bundle, or arbitrary "binary + runtime/" install layouts)
-    let sibling = dir.join("runtime");
-    if sibling.join("main.py").exists() {
-        return Some(sibling);
-    }
-
-    // macOS .app release: Contents/MacOS/cyber-runner-app → Contents/Resources/runtime
-    let mac_bundle = dir.parent()?.join("Resources").join("runtime");
-    if mac_bundle.join("main.py").exists() {
-        return Some(mac_bundle);
-    }
-
-    None
-}
-
-/// 找 cyber-runner-helper 二进制位置。
-/// - dev：与当前可执行文件同目录（cargo target/debug/）
-/// - release（.app）：兄弟目录 ../Resources/
-fn find_helper_binary() -> Option<PathBuf> {
-    let cur = std::env::current_exe().ok()?;
-    let dir = cur.parent()?;
-
-    // Cross-platform binary name —— Windows 上是 cyber-runner-helper.exe，
-    // *nix 上是 cyber-runner-helper。EXE_SUFFIX 为 "" / ".exe"。
-    let helper_name = format!("cyber-runner-helper{}", std::env::consts::EXE_SUFFIX);
-
-    // dev：与 app 同目录（cargo target/debug/）。Windows 的 NSIS/MSI bundle 装到
-    // `C:\Program Files\Cyber Runner\` 也是同目录，所以这一条就能 cover dev + win release。
-    let dev_path = dir.join(&helper_name);
-    if dev_path.exists() {
-        return Some(dev_path);
-    }
-
-    // macOS .app release：Contents/MacOS/cyber-runner-app → Contents/Resources/cyber-runner-helper
-    let bundle_path = dir.parent()?.join("Resources").join(&helper_name);
-    if bundle_path.exists() {
-        return Some(bundle_path);
-    }
-
-    None
-}
-
-/// 选最合适的引擎后端。
-fn pick_engine(base_dir: &PathBuf) -> Arc<dyn Engine> {
-    if let Some(helper) = find_helper_binary() {
-        tracing::info!(
-            ?helper,
-            ?base_dir,
-            "using BundledHelperEngine (own root helper)"
-        );
-        return Arc::new(BundledHelperEngine::new(helper, base_dir.clone())) as Arc<dyn Engine>;
-    }
-    if cfg!(target_os = "macos") && legacy_helper_available() {
-        tracing::info!(
-            "using LegacyHelperEngine — bridging via legacy RunControl LaunchDaemon \
-             (bundled helper binary not found at expected path)"
-        );
-        return Arc::new(LegacyHelperEngine::new()) as Arc<dyn Engine>;
-    }
-    let runtime = default_runtime_dir();
-    tracing::info!(
-        ?runtime,
-        "using RealEngine (direct python spawn, may need root)"
-    );
-    Arc::new(RealEngine::new(runtime)) as Arc<dyn Engine>
+        .join("CyberRunner")
 }
 
 pub fn run() {
-    let base_dir = default_base_dir();
-    if let Err(err) = std::fs::create_dir_all(&base_dir) {
-        tracing::warn!(?err, ?base_dir, "could not create CyberRunner base dir");
-    }
-    // Pre-create commands/ as the **user** (not root). Why: helper runs as
-    // root and would otherwise create commands/ owned by root with mode 755,
-    // making it unwritable for Tauri host (user) when dispatching requests
-    // → "Permission denied (os error 13)". Creating it here means it's owned
-    // by the user; root can still write into a user-owned dir, so helper
-    // works fine. Helper's `create_dir_all` is idempotent → no conflict.
-    let commands_dir = base_dir.join("commands");
-    if let Err(err) = std::fs::create_dir_all(&commands_dir) {
-        tracing::warn!(?err, ?commands_dir, "could not create commands dir");
-    }
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            std::env::var("RUST_LOG").unwrap_or_else(|_| "info,idevice=warn,jktcp=warn".into()),
+        )
+        .init();
 
-    // First-launch: copy bundled Python runtime (main.py etc.) to user data dir
-    // so the engine has something to spawn. No-op on subsequent launches; user
-    // edits to config.yaml / HNroute.txt are preserved.
-    let user_runtime = default_runtime_dir();
-    if let Some(bundled) = find_bundled_runtime() {
-        match ensure_runtime_files(&bundled, &user_runtime) {
-            Ok(true) => tracing::info!(
-                from = ?bundled,
-                to = ?user_runtime,
-                "copied bundled Python runtime to user data dir (first launch)"
-            ),
-            Ok(false) => tracing::debug!(?user_runtime, "user runtime already prepared"),
-            Err(err) => tracing::warn!(?err, ?bundled, ?user_runtime, "runtime copy failed"),
-        }
-    } else {
-        tracing::warn!(
-            "no bundled runtime found; engine will fail unless user has manually \
-             populated {user_runtime:?} with main.py and friends"
-        );
-    }
-
-    let engine = pick_engine(&base_dir);
-    let app_state = AppState::new_real(engine.clone(), base_dir);
-
-    // 给 WindowEvent::CloseRequested 留一份 engine 句柄，关 App 时调 shutdown()
-    let engine_for_shutdown = engine.clone();
+    let dir = data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let settings_file = SettingsFile::new(dir.join("settings.json"));
+    let settings = settings_file.load();
+    let engine = Engine::spawn(EngineConfig {
+        pair_dir: dir.join("pairing"),
+        ddi_cache_dir: dir.join("ddi"),
+        ddi_extra_dir: settings.ddi_dir.clone().map(PathBuf::from),
+    });
+    let state = AppState {
+        engine: engine.clone(),
+        routes: RouteStore::new(dir.join("routes")),
+        settings: Mutex::new(settings),
+        settings_file,
+        logs: Arc::new(Mutex::new(VecDeque::with_capacity(LOG_HISTORY))),
+    };
+    let logs = state.logs.clone();
+    let marker_path = dir.join(MARKER);
+    let marker_w = marker_path.clone();
 
     let app = tauri::Builder::default()
-        .manage(app_state)
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            // Two instances would fight over the phone; focus the first.
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .manage(state)
         .invoke_handler(tauri::generate_handler![
+            commands::bootstrap,
+            commands::save_settings,
             commands::start,
+            commands::pause,
+            commands::resume,
             commands::stop,
-            commands::cleanup,
-            commands::status,
+            commands::restore_location,
+            commands::list_routes,
+            commands::read_route_file,
+            commands::preview_route,
+            commands::create_route,
+            commands::rename_route,
+            commands::delete_route,
         ])
         .setup(move |app| {
-            let app_handle = app.handle().clone();
-            let mut rx = engine.subscribe();
-            tauri::async_runtime::spawn(async move {
-                tracing::info!("engine event pump started");
-                while let Ok(event) = rx.recv().await {
-                    if let Some(state) = app_handle.try_state::<AppState>() {
-                        state.apply_event(&event);
+            let handle = app.handle().clone();
+            if cfg!(target_os = "macos") {
+                app.set_menu(build_menu(&handle)?)?;
+                app.on_menu_event(|app, e| {
+                    if e.id() == "quit" {
+                        graceful_quit(app);
                     }
-                    let _ = app_handle.emit("engine_event", &event);
+                });
+            }
+
+            // Crash recovery: a marker left behind means the phone may still
+            // be at a simulated location. Restore as soon as it is attached.
+            let marker = marker_path.clone();
+            if let Some(m) = std::fs::read(&marker)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Marker>(&b).ok())
+            {
+                let engine = engine.clone();
+                let mut devices = engine.devices();
+                tauri::async_runtime::spawn(async move {
+                    let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+                    loop {
+                        let present = {
+                            let d = devices.borrow_and_update();
+                            match &m.udid {
+                                Some(u) => d.devices.iter().any(|x| &x.udid == u),
+                                None => !d.devices.is_empty(),
+                            }
+                        };
+                        if present {
+                            tracing::info!(
+                                "previous session left the location simulated; restoring"
+                            );
+                            if engine.restore_location(m.udid.clone()).await.is_ok() {
+                                let _ = std::fs::remove_file(&marker);
+                            }
+                            break;
+                        }
+                        if tokio::time::timeout_at(deadline, devices.changed())
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+            }
+
+            // Engine snapshot → window (the watch channel coalesces bursts).
+            let mut snaps = engine.subscribe();
+            let h = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut last_phase = Phase::Idle;
+                let mut marked = false;
+                while snaps.changed().await.is_ok() {
+                    let s = snaps.borrow_and_update().clone();
+                    if s.simulating != marked {
+                        marked = s.simulating;
+                        if marked {
+                            let m = Marker {
+                                udid: s.device.as_ref().map(|d| d.udid.clone()),
+                            };
+                            let _ = std::fs::write(
+                                &marker_w,
+                                serde_json::to_vec(&m).unwrap_or_default(),
+                            );
+                        } else {
+                            let _ = std::fs::remove_file(&marker_w);
+                        }
+                    }
+                    if s.phase == Phase::Finished && last_phase != Phase::Finished {
+                        let _ = h
+                            .notification()
+                            .builder()
+                            .title("Cyber Runner · 已达到目标")
+                            .body(
+                                "现在可以在校园跑 App 里结束跑步，然后回来点「停止」恢复真实定位。",
+                            )
+                            .show();
+                    }
+                    last_phase = s.phase;
+                    let _ = h.emit("snapshot", &s);
+                    // Cap UI updates at ~10 Hz.
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-                tracing::warn!("engine event pump ended (sender dropped)");
+            });
+            let mut devices = engine.devices();
+            let h = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                while devices.changed().await.is_ok() {
+                    let d = devices.borrow_and_update().clone();
+                    let _ = h.emit("devices", &d);
+                }
+            });
+            let mut log_rx = engine.logs();
+            let h = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    match log_rx.recv().await {
+                        Ok(line) => {
+                            {
+                                let mut l = logs.lock().unwrap();
+                                if l.len() == LOG_HISTORY {
+                                    l.pop_front();
+                                }
+                                l.push_back(line.clone());
+                            }
+                            let _ = h.emit("log", &line);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(_) => break,
+                    }
+                }
             });
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    // Hook both quit paths:
-    //   - WindowEvent::CloseRequested  → user clicked the red ✕ on the window
-    //   - RunEvent::ExitRequested      → user did Cmd+Q, Quit menu, or system logout
-    //
-    // Earlier we only had `.on_window_event(... CloseRequested ...)`, which
-    // covers ✕ but NOT Cmd+Q. Result: closing the app with Cmd+Q skipped
-    // engine.shutdown() entirely, so the root helper never got an Action::
-    // Shutdown request and never killed its child python. Each restart
-    // accumulated another orphan helper + python + tunnel until the user hit
-    // `already running with PID N` and had to sudo-kill manually.
-    //
-    // block_on synchronously drives shutdown to completion before letting
-    // Tauri proceed with exit, so helper actually gets to write a final state
-    // and tear down its child python before we lose IPC with it.
-    app.run(move |_app_handle, event| {
-        let trigger = match &event {
-            RunEvent::ExitRequested { .. } => Some("ExitRequested (Cmd+Q / system)"),
-            RunEvent::WindowEvent {
-                event: WindowEvent::CloseRequested { .. },
-                ..
-            } => Some("WindowEvent::CloseRequested (window ✕)"),
-            _ => None,
-        };
-        if let Some(reason) = trigger {
-            tracing::info!(reason, "shutting down engine before exit");
-            let engine = engine_for_shutdown.clone();
-            tauri::async_runtime::block_on(async move {
-                if let Err(err) = engine.shutdown().await {
-                    tracing::warn!(?err, "engine shutdown failed");
-                }
-            });
+    app.run(|handle, event| {
+        if let RunEvent::ExitRequested { .. } = event {
+            // Always give the phone its real location back before quitting.
+            // The engine lives on its own thread, so blocking here is safe.
+            let state = handle.state::<AppState>();
+            if state.engine.snapshot().simulating
+                || !matches!(state.engine.snapshot().phase, Phase::Idle)
+            {
+                let engine = state.engine.clone();
+                tauri::async_runtime::block_on(async move {
+                    let _ = tokio::time::timeout(Duration::from_secs(10), engine.stop()).await;
+                });
+            }
         }
     });
 }

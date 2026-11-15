@@ -1,0 +1,18 @@
+[package]
+name = "cyber-runner-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Headless Cyber Runner: list devices, run a route, restore location."
+
+[[bin]]
+name = "cyber-runner"
+path = "src/main.rs"
+
+[dependencies]
+cyber-runner-core.workspace = true
+cyber-runner-engine.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+dirs.workspace = true

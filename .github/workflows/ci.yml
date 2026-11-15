@@ -4,11 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
 
 jobs:
   rust:
@@ -16,32 +14,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-2022]
+        os: [macos-14, windows-2022, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> target"
-
       - name: cargo fmt
         run: cargo fmt --all -- --check
+      - name: clippy (core, engine, cli)
+        run: cargo clippy -p cyber-runner-core -p cyber-runner-engine -p cyber-runner-cli --all-targets -- -D warnings
+      - name: tests (core, engine, cli)
+        run: cargo test -p cyber-runner-core -p cyber-runner-engine -p cyber-runner-cli
+      - name: CLI smoke (no device attached)
+        shell: bash
+        run: |
+          cargo run -q -p cyber-runner-cli -- devices || true
+          cargo run -q -p cyber-runner-cli -- run --km 0.1 && exit 1 || echo "failed as expected without a phone"
 
-      - name: cargo clippy (core crates only)
-        # src-tauri is excluded here because it requires the frontend dist
-        # to be built first; the frontend job below covers it.
-        run: cargo clippy -p cyber-runner-core -p cyber-runner-engine -p cyber-runner-platform --all-targets -- -D warnings
-
-      - name: cargo test (core crates)
-        run: cargo test -p cyber-runner-core -p cyber-runner-engine -p cyber-runner-platform --no-fail-fast
-
-  frontend:
-    name: Frontend + Tauri build (${{ matrix.os }})
+  app:
+    name: App (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -49,69 +43,20 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
-
       - uses: dtolnay/rust-toolchain@stable
-
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> target"
-
-      - name: Install npm dependencies
-        run: npm ci
-
-      - name: Type-check Svelte
+      - run: npm ci
+      - name: svelte-check
         run: npm run check
-
-      - name: Build frontend
+      - name: build frontend
         run: npm run build
-
-      - name: Build helper binary (required by tauri.{macos,windows}.conf bundle.resources)
-        run: cargo build --release -p cyber-runner-helper
-
-      - name: cargo check (tauri host)
-        run: cargo check -p cyber-runner-app
-
-  runtime-smoke:
-    name: Python runtime smoke (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-14, windows-2022]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install uv
-        run: pip install uv
-
-      - name: uv sync (install runtime deps from pinned uv.lock)
-        working-directory: runtime
-        run: uv sync --frozen
-
-      # Guard against silent dep drift. The whole reason runtime/ exists with
-      # `pymobiledevice3==5.0.4` strict-pinned is that v5 → v9 broke our API
-      # contract (`DvtSecureSocketProxyService` deleted, `LocationSimulation.set`
-      # became async). Any future change that relaxes the pin or bumps the
-      # major version must fail CI here before reaching users.
-      - name: Verify pymobiledevice3 v5 API surface
-        working-directory: runtime
-        shell: bash
+      - name: clippy + tests (tauri host)
         run: |
-          uv run python -c "
-          from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
-          from pymobiledevice3.remote.remote_service_discovery import RemoteServiceDiscoveryService
-          from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import DvtSecureSocketProxyService
-          import inspect
-          assert not inspect.iscoroutinefunction(LocationSimulation.set), \
-              'LocationSimulation.set() is async — pymobiledevice3 got upgraded past v5! run.py needs to be migrated to DvtProvider + await loc.set().'
-          print('OK: pymobiledevice3 v5 API surface intact')
-          "
+          cargo clippy -p cyber-runner-app --all-targets -- -D warnings
+          cargo test -p cyber-runner-app
