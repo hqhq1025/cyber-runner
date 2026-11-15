@@ -11,7 +11,8 @@ export default defineConfig({
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {
-    target: "es2021",
+    // macOS WKWebView on older systems is Safari 16; WebView2 is evergreen.
+    target: ["safari16", "chrome110"],
     sourcemap: false,
   },
 });

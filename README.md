@@ -1,159 +1,97 @@
 # Cyber Runner
 
-赛博校园跑 —— 你手机说在跑，你没动。
+赛博校园跑 —— 让 iPhone 沿着路线"跑起来"。macOS · Windows 桌面 app。
 
-跨平台（macOS · Windows）的 iOS 定位模拟器，用 Tauri 2 + Rust + Svelte 5
-写的桌面 app。底层复用开源的
-[`pymobiledevice3`](https://github.com/doronz88/pymobiledevice3)
-驱动 iOS 设备的 DVT `LocationSimulation` 服务，按预设路线推 GPS 坐标。
+**v0.2 是完全重写**：纯 Rust 直接和手机通信，不再需要 Python、不再需要管理员 / root
+密码、不再有后台 helper 进程。Windows 和 macOS 走同一套代码。
 
-## 当前状态
+## 给使用者
 
-开发中。跨平台编译在 macOS + Windows 都过 CI；端到端真机（iPhone GPS
-真的动）在 macOS 上验证 OK；Windows 真机跑通是下一个里程碑。执行进度看
-`GOAL.md`。
+### 需要准备
 
-## 目录结构
+| | macOS | Windows |
+|---|---|---|
+| 系统 | macOS 11+ | Windows 10 / 11 |
+| 苹果驱动 | 系统自带 | 微软商店安装 **Apple Devices**（或 iTunes），装好打开一次 |
+| 管理员权限 | 不需要 | 不需要 |
+| 手机 | iPhone / iPad，**iOS 17 及以上** | 同左 |
+| 数据线 | 能传数据的线（仅充电线不行） | 同左 |
+
+### 三步开始
+
+1. 用数据线连上手机并解锁，打开 Cyber Runner，右上角显示手机名字即连接成功。
+2. 选路线（内置 北邮 · 西土城 / 沙河，或导入自己的），调好配速和目标。
+3. 点 **开始跑步**。第一次会依次：
+   - 手机弹「要信任此电脑吗？」→ 点信任、输密码；
+   - 若提示开发者模式：设置 → 隐私与安全性 → 开发者模式 → 打开并重启；
+   - 自动下载并挂载开发者磁盘镜像（约 17 MB，只需一次，手机重启后自动重新挂载）。
+
+跑完点 **结束**，手机立即恢复真实定位。设置了目标时，到达后默认**停在终点**，方便你先在
+校园跑 App 里点结束，再回来恢复定位。
+
+### 导入路线
+
+「导入路线」或直接把文件拖进窗口。支持 GPX、KML、GeoJSON、旧版 txt（`{"lng":..,"lat":..}`）
+和每行一个「经度,纬度」的文本。用百度地图坐标拾取器取的点选「百度」坐标系，高德/腾讯选
+「高德/腾讯」，手表导出的 GPX 自动识别为 GPS 坐标。
+
+路线会被自动清理：去掉重复点、去掉取点失误造成的"折返尖刺"、平滑成真人会跑的线。
+地图上显示的就是实际会跑的线，每圈长度也按它计算。
+
+### 常见问题
+
+- **定位卡在模拟位置**：设置 → 恢复真实定位；或重启手机。异常退出后再次打开 app 时，
+  只要手机连着，会自动恢复。
+- **Windows 显示"缺少苹果设备服务"**：安装 Apple Devices / iTunes 并打开一次。
+- **一直"建立定位通道"**：拔插数据线、保持手机解锁，仍不行重启手机。
+- 遇到问题：底部「日志」→「复制全部」发给开发者。
+
+## 给开发者
 
 ```
-cyber-runner/
-├── crates/
-│   ├── cyber-runner-core/      # 纯逻辑，types / 坐标转换 / 路径平滑，无 I/O
-│   ├── cyber-runner-engine/    # Python 子进程编排、日志流、
-│   │                           # BundledHelperEngine + LegacyHelperEngine
-│   ├── cyber-runner-helper/    # 独立 root binary，监听 commands/ 文件 IPC
-│   └── cyber-runner-platform/  # macOS / Windows 提权抽象
-├── runtime/                    # Python GPS 引擎（main.py + init/ + run.py
-│                               # 等），vendored 自 BiancoChiu/iOSRealRun-cli-18
-│                               # (MPL-2.0)，pymobiledevice3 严格 pin 5.0.4
-├── src-tauri/                  # Tauri host（productName "Cyber Runner",
-│                               # bundle id dev.haoqing.cyber-runner）
-├── src/                        # Svelte 5 前端
-├── scripts/                    # drive_android.py 等 bootstrap 脚本
-└── docs/                       # 调研笔记 + plan
+crates/
+  cyber-runner-core/    纯逻辑：坐标系转换、路线解析、轨迹清理/平滑、按时间积分的运动模型（全部单测）
+  cyber-runner-engine/  设备层：usbmuxd → 配对 → 开发者模式 → DDI → CoreDeviceProxy 软件隧道 → DVT 定位
+  cyber-runner-cli/     命令行：cyber-runner devices | run | restore
+src-tauri/              桌面宿主：路线库、设置持久化、事件推送、退出时恢复定位
+src/                    Svelte 5 + TypeScript 界面
 ```
 
-App 运行时数据（日志、PID、Python venv）落在：
+关键设计：
 
-- **macOS**：`~/Library/Application Support/CyberRunner/`
-- **Windows**：`%LOCALAPPDATA%\CyberRunner\`（即 `~\AppData\Local\CyberRunner\`）
-- **Linux**：`~/.local/share/CyberRunner/`
+- **一个进程，无特权**。设备 I/O 跑在引擎自己的线程（单线程 tokio runtime）里，UI 通过
+  命令 / 状态快照和它通信。`idevice` 的用户态 TCP 栈替代了 pymobiledevice3 的 TUN 隧道，
+  所以不需要 root / 管理员。
+- **配速精确**。位置是"已跑距离"的函数，距离由真实流逝时间积分得到，与发送频率、USB
+  延迟、系统计时精度无关。`cargo test -p cyber-runner-core measured_pace` 按"校园跑 App 以
+  1 Hz 采样 GPS 求和"的方式验证，误差 < 0.5%。
+- **恢复定位有三层保障**：结束按钮 / 退出菜单（macOS 自定义了 Cmd+Q，系统默认的会跳过清理）
+  → 当前连接失败时重新连接再清 → 仍失败则留下标记，下次启动检测到手机自动恢复。
 
-## 开发依赖
-
-- **Rust** stable（≥ 1.79）
-- **Node** 22+（CI 用 22，更老版本可能能跑但没测）
-- **Python** 3.12+（runtime/ 锁定 3.12；3.13 实测也 OK）
-- **`uv`** 管 Python venv（推荐）—— 第一次启动时引擎自动 `uv sync`
-  把 `runtime/.venv` 装好，**严格按 `pyproject.toml` 拉 `pymobiledevice3==5.0.4`**
-  （v5 → v9 API 完全不兼容，不能让 pip 自由升级，详情见 issue #1）
-
-分平台还要：
-
-- **macOS** — Xcode Command Line Tools（Rust 用的 linker）
-- **Windows** — 装 [iTunes](https://www.apple.com/itunes/)（提供 Apple Mobile
-  Device Service，`pymobiledevice3` 通过 usbmux 跟它对话）
-
-> **本项目自带 Python runtime**。`runtime/` 目录里的 main.py / init/ / run.py
-> 等是 vendored 自 [BiancoChiu/iOSRealRun-cli-18](https://github.com/BiancoChiu/iOSRealRun-cli-18)
-> （MPL-2.0），不要再去另装那个 repo —— `git clone cyber-runner` 拿到的就是
-> 完整可跑的代码。第一次启动 app 会把 `runtime/` 复制到 OS 标准 data 目录
-> 然后跑 `uv sync` 起 venv。
-
-## 手机端配置（iPhone / iPad）
-
-**每台设备做一次就够。**
-
-**硬件 / 系统要求**
-
-- iPhone 或 iPad，**iOS 17 及以上**（17 / 18 / 26 均实测可用）
-- **数据线**（不是仅充电线，否则手机的 lockdownd 服务连不上来）
-- 同一时间**只能接一台** iOS 设备 —— 多台会让 usbmux 蒙圈
-
-**步骤**
-
-1. **开启开发者模式**
-   `设置 → 隐私与安全性 → 开发者模式 → 打开`
-   - 打开后需要**重启 + 输入密码**才生效
-   - 找不到这个菜单？把设备 USB 接上，先跑一次 Cyber Runner，
-     `pymobiledevice3` 会自动唤出这个开关，然后再重试
-2. **USB 连上电脑 → 解锁手机 → 弹"是否信任此电脑"时点信任**
-3. **（仅 Windows）** 确保 iTunes / Apple Mobile Device Service 在后台
-   运行 —— 装完 iTunes 后至少打开过一次就行
-
-## 启动（开发模式）
-
-### macOS
+### 开发
 
 ```bash
 npm install
-npm run tauri dev
+npm run tauri dev          # 桌面 app
+npm run dev                # 仅界面，浏览器里用模拟数据（?autostart、?nodevice、?fail）
+cargo run -p cyber-runner-cli -- devices
 ```
 
-第一次点 **▶ 开始** 会触发 `osascript … with administrator privileges`
-拉起 root helper —— 会弹一次系统密码框，输入开机密码即可。每个 session
-弹一次。
-
-### Windows
-
-**用管理员身份打开 PowerShell**，然后：
-
-```powershell
-npm install
-npm run tauri dev
-```
-
-> **为什么需要管理员？** Python 引擎要给 iOS 17+ DVT tunnel 建一个 TUN
-> 虚拟网卡，这一步需要 `Administrator` 权限。Release 打包出来的 `.msi`
-> 装的 app 有 UAC manifest 会自动提权；但 `tauri dev` 是继承你启动它的
-> 终端的权限，所以**终端本身**必须是管理员。
-
-### 你应该看到什么
-
-1. 点 **▶ 开始** → 按钮变成"准备中…" + 转圈
-2. 大约 **10–15 秒** 后 iOS Developer Mode tunnel 建立成功，按钮变成
-   **✓ 已开始赛博跑步**（绿色脉冲动画）。打开 iPhone 的"地图"app
-   或者校园跑那个 app，能看到位置沿预设路线在动了
-3. 点 **■ 停止** → Python 引擎被干净 kill，真实 GPS 恢复
-
-## 打包发布版
+提交前：
 
 ```bash
-npm run tauri build
+cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+npm run check && npm run build
 ```
 
-产出：
+### 打包
 
-- **macOS** — `.app` + `.dmg` 在 `src-tauri/target/release/bundle/macos/`
-  （未签名，仅自用；要发给别人要 Apple Developer ID）
-- **Windows** — `.msi` + NSIS `.exe` 在 `src-tauri\target\release\bundle\`
-  （未签名；Windows SmartScreen 会拦，要 Windows 代码签名证书才能消除）
+`npm run tauri build`，或在 GitHub Actions 里手动运行 **Release** 工作流（产出 macOS
+通用 .dmg、Windows .msi / .exe 安装包和 CLI，挂在草稿 Release 上）。安装包未签名：
+macOS 首次打开需右键 → 打开；Windows SmartScreen 选「仍要运行」。
 
-## 常见问题 / 注意事项
+## 致谢
 
-- **不要中途关窗口 / 拔 USB 线。** Python 引擎来不及清理的话，手机会卡在
-  模拟位置状态。**恢复方法：重启 iPhone。**
-- **退出请用 ■ 停止按钮。** 关窗口也会触发 `Action::Shutdown` 让 helper
-  干净退出，但显式点停止最稳。
-- **Tunnel 启动 5–15 秒属正常。** "准备中…" 这段时间不是卡住。如果超过
-  30 秒还在准备中，看下日志面板有没有 `pymobiledevice3` 报错 —— 最常见
-  是开发者模式没开、或者手机锁屏了。
-- **macOS：** 密码框点取消 helper 起不来 —— 再点 ▶ 开始会重新弹一次。
-- **Windows：** UAC manifest 只对 release `.msi` 装的 app 生效；
-  `tauri dev` 必须在管理员终端里跑。
-
-## 一段话讲架构
-
-Tauri host（Rust）负责 UI 事件和 spawn `cyber-runner-helper` —— 一个
-独立的 root binary —— 通过平台提权（macOS 用 osascript，Windows 通过
-继承管理员权限的 `CreateProcess` + detach）拉起。Helper 轮询
-`…/commands/request-*.json`，把每个请求 dispatch 给 `RealEngine`（在
-helper 进程内 spawn `main.py` Python 子进程），结果写回
-`response-*.json`。**Helper 是 Python 子进程的唯一持有者**，所以点
-**停止** = 干掉那个 Python 子进程 = 真实 GPS 恢复。详细设计看
-`docs/research/`。
-
-## 给 AI 助手用
-
-如果你用 Claude Code / Cursor / Codex 等 AI agent 帮忙配置或调试，根目录
-有 `AGENTS.md`，里面写了 agent 该问用户什么、查什么、不该乱碰什么。
+设备协议基于 [idevice](https://github.com/jkcoxson/idevice)。开发者磁盘镜像来自
+[doronz88/DeveloperDiskImage](https://github.com/doronz88/DeveloperDiskImage)。内置路线
+数据来自 [BiancoChiu/iOSRealRun-cli-18](https://github.com/BiancoChiu/iOSRealRun-cli-18)。

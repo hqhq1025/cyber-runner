@@ -1,18 +1,18 @@
-//! `cyber-runner-engine` — orchestrates the Python engine subprocess,
-//! streams logs, and exposes a high-level [`Engine`] trait that the
-//! Tauri host invokes.
+//! Device side of Cyber Runner, in pure Rust on top of `idevice`.
+//!
+//! Pipeline: usbmuxd → lockdown (pair / trust) → AMFI developer-mode check →
+//! personalized DDI mount → CoreDeviceProxy + in-process TCP stack → RSD →
+//! DVT `LocationSimulation`. Runs unprivileged on macOS, Windows and Linux.
 
-pub mod bundled_helper;
-pub mod cleanup;
-pub mod engine;
-pub mod env_setup;
-pub mod legacy_helper;
-pub mod python_runner;
-pub mod real;
-pub mod runtime_install;
+pub mod ddi;
+pub mod device;
+pub mod error;
+pub mod link;
+pub mod runner;
 
-pub use bundled_helper::BundledHelperEngine;
-pub use engine::{Engine, EngineError, Event};
-pub use legacy_helper::{legacy_helper_available, LegacyHelperEngine};
-pub use real::RealEngine;
-pub use runtime_install::ensure_runtime_files;
+pub use device::{list_devices, DeviceInfo};
+pub use error::{EngineError, ErrorInfo};
+pub use runner::{
+    DeviceList, Engine, EngineConfig, FinishAction, Level, LogLine, Phase, RunPlan, Snapshot,
+    StopAfter,
+};
