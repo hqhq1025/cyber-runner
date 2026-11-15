@@ -2,7 +2,7 @@
   // Treadmill-style controls: one knob for speed, one for how far.
   // Everything else lives under "更多设置".
   import { app } from "../lib/store.svelte";
-  import { durationText, lengthText, paceText } from "../lib/format";
+  import { paceText } from "../lib/format";
   import Segmented from "./Segmented.svelte";
   import type { FinishAction, GoalKind, LoopMode, Realism } from "../lib/api";
 
@@ -24,9 +24,6 @@
   const st = $derived(app.settings);
   const live = $derived(app.active && app.phase !== "stopping");
   const paceSec = $derived(Math.round(1000 / st.speedMps));
-  const route = $derived(app.selectedRoute);
-  const closed = $derived(st.loopMode === "closed" || (st.loopMode === "auto" && !!route?.autoClosed));
-  const lapLen = $derived(route ? (closed ? route.lapClosedM : route.lapOutAndBackM) : 0);
   const runKm = $derived(st.goalKm + st.goalMarginKm);
 
   function setPace(sec: number) {
@@ -70,30 +67,10 @@
   const more = hold(() => (st.goal === "time" ? setMinutes(st.goalMinutes + 1) : setKm(st.goalKm + 0.5)));
   const less = hold(() => (st.goal === "time" ? setMinutes(st.goalMinutes - 1) : setKm(st.goalKm - 0.5)));
 
-  const estimate = $derived.by(() => {
-    if (st.goal === "distance") {
-      const laps = lapLen > 0 ? ` · ${((runKm * 1000) / lapLen).toFixed(1)} 圈` : "";
-      return `约 ${durationText((runKm * 1000) / st.speedMps)}${laps}`;
-    }
-    if (st.goal === "time") return `约 ${((st.speedMps * st.goalMinutes * 60) / 1000).toFixed(2)} km`;
-    return "一直跑，直到手动结束";
-  });
-
-  const REALISM: Record<Realism, string> = { off: "关", low: "低", normal: "中", high: "高" };
-  const summary = $derived(
-    [
-      `拟真 ${REALISM[st.realism]}`,
-      st.goal === "distance" ? `余量 +${st.goalMarginKm} km` : st.goal === "time" ? "按时间" : "不限",
-      st.onFinish === "hold" ? "跑完停在终点" : "跑完恢复定位",
-    ].join(" · "),
-  );
 </script>
 
 <section class="card panel" aria-labelledby="plan-title">
-  <div class="row-head">
-    <h2 class="card-title" id="plan-title">跑步机</h2>
-    {#if live}<span class="live">调整实时生效</span>{/if}
-  </div>
+  <h2 class="sr-only" id="plan-title">跑步设置</h2>
 
   <div class="routebar">
     <label class="sr-only" for="route-select">路线</label>
@@ -122,11 +99,10 @@
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
     </button>
   </div>
-  {#if route}<p class="routefact">一圈 <b class="num">{lengthText(lapLen)}</b></p>{/if}
 
   <!-- Speed knob -->
   <div class="knob" role="group" aria-label="配速">
-    <span class="klabel">配速</span>
+    <span class="klabel">配速{#if live}<em>实时生效</em>{/if}</span>
     <div class="kline">
       <button class="kbtn" aria-label="慢一点" title="慢 5 秒" {...slower}>−</button>
       <div class="kval">
@@ -137,18 +113,17 @@
     <div class="chips">
       {#each PACES as p (p.sec)}
         <button class="chip" class:on={Math.abs(paceSec - p.sec) < 1} onclick={() => setPace(p.sec)}>
-          <span>{p.label}</span><span class="num sub">{paceText(1000 / p.sec)}</span>
+{p.label}
         </button>
       {/each}
     </div>
-    <p class="khint num">{(st.speedMps * 3.6).toFixed(1)} km/h · 最快 3'05"，不会快过 3 分配</p>
   </div>
 
   <!-- Distance (or time) knob -->
   <div class="knob" role="group" aria-label="跑多远">
     <span class="klabel">{st.goal === "time" ? "跑多久" : "跑多远"}</span>
     {#if st.goal === "none"}
-      <p class="khint">不限距离，手动结束。可在「更多设置」里改。</p>
+      <p class="khint">手动结束</p>
     {:else}
       <div class="kline">
         <button class="kbtn" aria-label="减少" {...less}>−</button>
@@ -156,7 +131,7 @@
           {#if st.goal === "time"}
             <span class="num">{st.goalMinutes}</span><span class="ku">分钟</span>
           {:else}
-            <span class="num">{runKm.toFixed(1)}</span><span class="ku">km</span>
+            <span class="num">{st.goalKm}</span><span class="ku">km</span>
           {/if}
         </div>
         <button class="kbtn" aria-label="增加" {...more}>+</button>
@@ -165,24 +140,19 @@
         <div class="chips">
           {#each KMS as k (k)}
             <button class="chip" class:on={st.goalKm === k} onclick={() => setKm(k)}>
-              <span>{k} km 档</span><span class="num sub">实跑 {(k + st.goalMarginKm).toFixed(1)}</span>
+{k} km
             </button>
           {/each}
         </div>
-        <p class="khint num">
-          {#if st.goalMarginKm > 0}{st.goalKm} km + {st.goalMarginKm} km 余量（防 App 少记）· {/if}{estimate}
-        </p>
-      {:else}
-        <p class="khint num">{estimate}</p>
+        {#if st.goalMarginKm > 0}
+          <p class="khint num" title="校园跑 App 计的距离可能偏少，多跑一点更稳">实际跑 {runKm} km，多 {st.goalMarginKm} km 防少记</p>
+        {/if}
       {/if}
     {/if}
   </div>
 
   <details class="more">
-    <summary>
-      <span>更多设置</span>
-      <span class="msum">{summary}</span>
-    </summary>
+    <summary>更多设置</summary>
     <div class="mbody">
       <div class="mrow">
         <span class="mlabel">目标方式</span>
@@ -268,16 +238,6 @@
     flex-direction: column;
     gap: 14px;
   }
-  .row-head {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-  .live {
-    font-size: 11.5px;
-    color: var(--accent);
-    font-weight: 600;
-  }
   .routebar {
     display: flex;
     gap: 6px;
@@ -287,14 +247,6 @@
     min-width: 0;
     font-weight: 600;
   }
-  .routefact {
-    margin: -8px 0 0;
-    font-size: 12px;
-    color: var(--muted);
-  }
-  .routefact b {
-    color: var(--fg-2);
-  }
   .knob {
     display: flex;
     flex-direction: column;
@@ -303,6 +255,12 @@
     border-radius: 12px;
     background: var(--panel-2);
     border: 1px solid var(--line);
+  }
+  .klabel em {
+    margin-left: 8px;
+    font-style: normal;
+    font-weight: 500;
+    color: var(--accent);
   }
   .klabel {
     font-size: 12.5px;
@@ -363,20 +321,15 @@
   }
   .chip {
     display: flex;
-    flex-direction: column;
+    justify-content: center;
     align-items: center;
-    padding: 5px 0;
+    height: 34px;
     border-radius: 9px;
     border: 1px solid var(--line);
     background: var(--panel);
-    font-size: 12.5px;
+    font-size: 13.5px;
     color: var(--fg-2);
-    line-height: 1.3;
     cursor: pointer;
-  }
-  .chip .sub {
-    font-size: 11px;
-    color: var(--muted);
   }
   .chip:hover {
     border-color: var(--line-strong);
@@ -418,12 +371,6 @@
   }
   .more[open] summary::before {
     transform: rotate(90deg);
-  }
-  .msum {
-    margin-left: auto;
-    font-size: 11.5px;
-    font-weight: 500;
-    color: var(--muted);
   }
   .mbody {
     display: flex;

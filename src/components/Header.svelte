@@ -12,11 +12,10 @@
     if (!dev || d.devices.length === 0) return { tone: "warn", text: "未连接手机", sub: "用数据线连接 iPhone" };
     const extra = d.devices.length > 1 ? ` · 共 ${d.devices.length} 台` : "";
     if (!dev.trusted) return { tone: "warn", text: deviceName(dev), sub: `等待信任此电脑${extra}` };
-    return {
-      tone: "ok",
-      text: deviceName(dev),
-      sub: `iOS ${dev.iosVersion ?? "?"} · ${dev.connection === "usb" ? "USB" : "无线"}${extra}`,
-    };
+    if (dev.connection !== "usb") {
+      return { tone: "warn", text: deviceName(dev), sub: `无线连接不能用，请插数据线${extra}` };
+    }
+    return { tone: "ok", text: deviceName(dev), sub: `iOS ${dev.iosVersion ?? "?"} · USB${extra}` };
   });
 </script>
 
@@ -28,10 +27,7 @@
       <path d="M14 16h12a4 4 0 0 1 0 8H14a4 4 0 0 1 0-8Z" fill="#3f9a5b" />
       <circle cx="27.5" cy="12.5" r="2.6" fill="#c8ff3d" />
     </svg>
-    <div>
-      <div class="title">Cyber Runner</div>
-      <div class="subtitle">iPhone 定位模拟 · 校园跑</div>
-    </div>
+    <div class="title">Cyber Runner</div>
   </div>
 
   <div class="right">
@@ -69,10 +65,6 @@
     font-weight: 700;
     font-size: 15px;
     letter-spacing: -0.01em;
-  }
-  .subtitle {
-    font-size: 12px;
-    color: var(--muted);
   }
   .right {
     display: flex;

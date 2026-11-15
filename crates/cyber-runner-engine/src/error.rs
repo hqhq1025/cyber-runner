@@ -35,7 +35,7 @@ pub enum EngineError {
     Busy,
     #[error("引擎已退出")]
     EngineGone,
-    #[error("{0}")]
+    #[error("和手机的连接出错了")]
     Device(String),
 }
 
@@ -87,7 +87,15 @@ impl EngineError {
             Self::Route(_) => "换一条路线，或检查导入的文件格式与坐标系。",
             Self::Busy => "先停止当前的跑步。",
             Self::EngineGone => "请重启 Cyber Runner。",
-            Self::Device(_) => "拔插数据线并解锁手机后重试。",
+            Self::Device(_) => "用数据线连接手机（无线连接不行），解锁后重试。",
+        }
+    }
+
+    /// Raw technical detail for the log (empty when the message already says it all).
+    pub fn detail(&self) -> String {
+        match self {
+            Self::Device(d) => format!("（{d}）"),
+            _ => String::new(),
         }
     }
 

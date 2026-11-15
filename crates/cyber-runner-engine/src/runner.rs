@@ -406,7 +406,8 @@ impl Actor {
     }
 
     fn fail(&self, err: &EngineError) {
-        self.log.error(format!("{err} — {}", err.hint()));
+        self.log
+            .error(format!("{err}{} — {}", err.detail(), err.hint()));
         let info = err.info();
         self.publish(|s| {
             s.phase = Phase::Idle;
@@ -556,7 +557,8 @@ impl Actor {
                     return;
                 }
                 Outcome::LinkLost(err) => {
-                    self.log.warn(format!("连接中断：{err}，正在自动重连…"));
+                    self.log
+                        .warn(format!("连接中断：{err}{}，正在自动重连…", err.detail()));
                     match self.reconnect(&mut run, provider.udid().to_string()).await {
                         Ok(Some(new_link)) => link = new_link,
                         Ok(None) => return, // stopped during reconnect
